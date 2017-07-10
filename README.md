@@ -18,3 +18,4 @@ much of the functionality of the AI Jam demo with the browser-based interface
 of the AI Duet demo. Can be set up much more easily than the Ableton version.
 * [**NSynth**](/nsynth): Two demonstrations of our neural audio synthesis
 method.
+* [**Sketch-RNN**](/sketch-rnn-js): A JavaScript implementation of our Sketch-RNN algorithm, along with 100 pre-trained models.
