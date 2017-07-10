@@ -16,13 +16,13 @@ Original interface built by [Yotam Mann](https://github.com/tambien) with friend
 
 Install [Flask](http://flask.pocoo.org/) and [Magenta](/README.md#Installation) (v0.1.15 or greater).
 
-From the demos/ai-jam-js directory launch the interface from the command line:
+From the the ai-jam-js directory launch the interface from the command line:
 
 ```bash
 sh RUN_DEMO.sh
 ```
 
-When the script is run, the following pre-trained models will be automatically downloaded to the demos/ai-jam-js directory:
+When the script is run, the following pre-trained models will be automatically downloaded to the ai-jam-js directory:
 
 * [Attention RNN](/magenta/models/melody_rnn/README.md#attention)
 * [Pianoroll RNN-NADE](/magenta/models/pianoroll_rnn_nade/README.md)
@@ -57,8 +57,7 @@ The piano can also be controlled from your computer keyboard thanks to [Audiokey
 
 ## CONTROLS
 
-Currently, the only way to change settings for the models is to use the keyboard
-shortcuts below.
+You can change various settings for the models and interactions using the buttons at the top left of the screen. Additionally, you may use the keyboard shortcuts below.
 
 | Key              | Action |
 |------------------|--------|
