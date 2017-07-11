@@ -9,3 +9,6 @@ There are three main ways to use NSynth:
 * A MaxForLive Device that integrates into both [Max MSP](https://cycling74.com/products/max/) and [Ableton Live](https://www.ableton.com/en/live/). It allows you to explore the space of NSynth sounds through an intuitive grid interface. [[<b>DOWNLOAD</b>]](http://download.magenta.tensorflow.org/demos/nsynth/NSynthProject.zip)
 
 * Create your own audio samples with the [pretrained network](https://github.com/tensorflow/magenta/tree/master/magenta/models/nsynth).
+
+See also the Jupyter notebook for NSynth in the [/notebooks](/notebooks)
+directory.
