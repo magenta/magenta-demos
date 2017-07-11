@@ -10,5 +10,5 @@ There are three main ways to use NSynth:
 
 * Create your own audio samples with the [pretrained network](https://github.com/tensorflow/magenta/tree/master/magenta/models/nsynth).
 
-See also the Jupyter notebook for NSynth in the [/notebooks](/notebooks)
+See also the Jupyter notebook for NSynth in the [/jupyter-notebooks](/jupyter-notebooks)
 directory.
