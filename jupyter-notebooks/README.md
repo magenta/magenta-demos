@@ -7,5 +7,5 @@ as part of Magenta. If not, see the Jupyter
 
 The notebooks can be viewed by clicking on the links above.  To use them
 interactively, run the command ``jupyter notebook`` from the
-``/notebooks`` directory of your magenta-demos install.
+``/jupyter-notebooks`` directory of your magenta-demos install.
 This will launch Jupyter in your browser.

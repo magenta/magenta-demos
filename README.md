@@ -16,8 +16,7 @@ watch a video of this demo in action on our
 * [**AI Jam (JavaScript)**](/ai-jam-js): A demonstration that combines
 much of the functionality of the AI Jam demo with the browser-based interface
 of the AI Duet demo. Can be set up much more easily than the Ableton version.
-* [**Jupyter Notebooks**](/notebooks): Various Jupyter notebooks spanning
-all Magenta projects.
+* [**Jupyter Notebooks**](/jupyter-notebooks): Jupyter notebooks for all Magenta projects.
 * [**NSynth**](/nsynth): Two demonstrations of our neural audio synthesis
 method.
 * [**Sketch-RNN**](/sketch-rnn-js): A JavaScript implementation of our Sketch-RNN algorithm, along with 100 pre-trained models.
