@@ -13,5 +13,5 @@ This will launch Jupyter in your browser.
 
 Available notebooks include
 
-* **NSynth**: [Exploring_Neural_Audio_Synthesis_with_NSynth.ipynb](/notebooks/Exploring_Neural_Audio_Synthesis_with_NSynth.ipynb)
+* **Exploring Neural Audio Synthesis with NSynth**: [Exploring_Neural_Audio_Synthesis_with_NSynth.ipynb](/notebooks/Exploring_Neural_Audio_Synthesis_with_NSynth.ipynb)
 * **Performance RNN**: [Performance_RNN.ipynb](/notebooks/Performance_RNN.ipynb)
