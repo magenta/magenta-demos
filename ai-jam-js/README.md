@@ -24,7 +24,8 @@ sh RUN_DEMO.sh
 
 When the script is run, the following pre-trained models will be automatically downloaded to the ai-jam-js directory:
 
-* [Attention RNN](/magenta/models/melody_rnn/README.md#attention)
+* [Attention RNN](/magenta-demos)
+/models/melody_rnn/README.md#attention)
 * [Pianoroll RNN-NADE](/magenta/models/pianoroll_rnn_nade/README.md)
 * [Performance RNN](/magenta/models/performance_rnn/README.md)
 * [Drum Kit RNN](/magenta/models/drums_rnn/README.md)
