@@ -64,10 +64,19 @@ We use the [Mira](https://cycling74.com/products/mira/#.WFIIdKIrJE4) iPad app to
 ## Setup IAC MIDI Drivers (Internal MIDI routing)
 
 [Setup internal MIDI routing buses](https://help.ableton.com/hc/en-us/articles/209774225-Using-virtual-MIDI-buses-in-Live)
+You will want to set up four buses with device name "IAC Driver" and bus names:
+* `IAC Bus 1`
+* `IAC Bus 2`
+* `IAC Bus 3`
+* `IAC Bus 4`
+
+These will appear as buses with names:
 * `IAC Driver IAC Bus 1`
 * `IAC Driver IAC Bus 2`
 * `IAC Driver IAC Bus 3`
 * `IAC Driver IAC Bus 4`
+
+
 
 ## Install Ableton Live 9 Suite (Sound Generation)
 
