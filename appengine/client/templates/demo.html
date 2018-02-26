@@ -1,0 +1,9 @@
+<div id="experiment-div">
+  <h1>Demo Mode</h1>
+  <form id="experiment-form" action="/experimenter" method="POST">
+    <span class='form-text'>User ID:</span> <input type="number" id="experiment-uid"> <br>
+    <span class='form-text'>Episode ID:</span> <input type="number" id="experiment-epid"> <br>
+    <input type="hidden" name="xsrf_token", value="{{ xsrf_token }}" />
+  </form>
+</div>
+

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <title>Affective Reward</title>
+
+
+  {# Load the material js lib #}
+  {# <script src="https://www.gstatic.com/external_hosted/material_design_lite/mdl_all_js_compiled.js"></script> #}
+  
+  {# Load our app's script #}
+  <script type="text/javascript" src="{{url_for('static', filename='js/base_script.js')}}"></script>
+
+
+  {% block head %}
+  {% endblock %}
+
+  {# CSS libs and fonts for material #}
+  <link rel="stylesheet" href="https://www.gstatic.com/external_hosted/material_design_lite/mdl_css-indigo-purple-bundle.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700" type="text/css">
+
+  {# Local CSS lib #}
+  <link type="text/css" rel="stylesheet" href="{{url_for('static', filename='css/base_style.css')}}" />
+</head>
+  <body class="mdl-color--grey-100 mdl-color-text--grey-700 mdl-base">
+
+    <!-- main content container -->
+    <main class="affective-reward-container mdl-layout mdl-js-layout mdl-layout--fixed-header">
+      <header class="mdl-layout__header mdl-layout__header--scroll mdl-color--primary">
+        <div class="mdl-layout--large-screen-only mdl-lasyout__header-row"></div>
+
+        <!-- primary header -->
+        <div class="mdl-layout mdl-layout__header-row">
+          <h3>Affective Reward</h3>
+        </div>
+
+        <!-- secondary header -->
+        <div class="mdl-layout__tab-bar mdl-js-ripple-effect mdl-color--primary-dark">
+          <div class="mdl-layout__tab mdl-cell--hide-phone mdl-cell--hide-tablet">Train a deep learning model with your face!</div>
+          <div class="mdl-layout-spacer"></div>
+          <div class="mdl-layout__tab">
+            <span>{{ user.email() }}</span> | <a href="/signout">sign out</a>
+          </div>
+        </div>
+      </header><!-- end page header -->
+
+      <!-- primary template block -->
+      <div id="content">
+        {% block content %}
+        {% endblock %}
+      </div>
+
+      <!-- toast and snackbar -->
+      <div id="recording-toast" class="mdl-js-snackbar mdl-snackbar">
+        <div class="mdl-snackbar__text"></div>
+        <button class="mdl-snackbar__action" type="button"></button>
+      </div>
+
+      <!-- push the spacer to the bottom of the screen -->
+      <div class="mdl-layout-spacer"></div>
+
+      <!-- page footer -->
+      <footer class="mdl-mini-footer mdl-color--grey-200">
+        <div class="mdl-mini-footer__left-section">
+          <div class="mdl-logo mdl-color-text--grey-900 mdl-cell--hide-phone mdl-cell--hide-tablet">Your Team Name Here</div>
+        </div>
+        <div class="mdl-mini-footer__right-section mdl-cell--hide-phone mdl-cell--hide-tablet">
+	  Your Logo here.
+        </div>
+      </footer><!-- end page footer -->
+    </main> <!-- end mdl-layout -->
+  </body>
+</html>

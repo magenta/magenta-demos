@@ -1,0 +1,15 @@
+<div id="experiment-div">
+  <h1>Experimenter Mode</h1>
+  <form id="experiment-form" action="/experimenter" method="POST">
+    <span class='form-text'>Experiment name:</span> <input type="text" id="experiment-name"> <br>
+    <span class='form-text'>User ID:</span> <input type="number" id="experiment-uid"> <br>
+    <span class='form-text'>Episode ID:</span> <input type="number" id="experiment-epid"> <br>
+    <span class='form-text'>Sketch ID:</span> <input type="number" id="experiment-sampleid"> <br>
+    <span class='form-text'>Image ID:</span> <input type="number" id="experiment-imageid"> <br>
+    <textarea id="experiment-descrip" name="text" rows="2" cols="40" maxlength="140" placeholder="Experiment description"></textarea>
+    <input type="hidden" name="xsrf_token", value="{{ xsrf_token }}" />
+  </form>
+  <button class="feedback-button mdl-button mdl-js-button mdl-button--raised mdl-js-ripple-effect" id="experiment-button">Start recording</button>
+</div>
+
+

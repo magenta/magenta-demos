@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <script type="text/javascript">
+    tosSetup();
+  </script>
+{% endblock %}
+
+{% block content %}
+<div class="mdl-grid mdl-grid--no-spacing">
+  <div class="mdl-layout-spacer"></div>
+  <div id="terms-of-service" class="feedback-container mdl-cell--7-col">
+    <div class="tos-div">
+      <h4><strong>Can a neural network learn to draw better based on your facial expressions?</strong></h4>
+      <h6><strong>Help it learn by watching it draw and allowing it to observe your reaction. Your natural reactions will help with machine learning research. The app only stores the detected emotions, and will not store images of your face or identity.</strong></h6>
+      <br>
+      <br>
+      <small>
+	Here is where to put appropriate terms of service. Take care to obey any terms of service you promise, including the
+	promise not to store images of face or identity.
+      </small>
+    </div>
+    <button class="feedback-button mdl-button mdl-js-button mdl-button--raised mdl-js-ripple-effect mdl-color--accent mdl-color-text--accent-contrast" id="tos-agree">Let's scribble!</button>
+  </div>
+  <div class="mdl-layout-spacer"></div>
+</div>
+{% endblock %}
