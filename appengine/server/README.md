@@ -1,10 +1,10 @@
-## Server code
+# Server code
 
-# Setup
+## Setup
 
 Here is a [view of the API](https://apis-explorer.appspot.com/apis-explorer/?base=https://affectivecomputing-188820.appspot.com/_ah/api#p/affective/v1/echo.echo?n=18&fields=content&_h=5&resource=%257B%250A++%2522content%2522%253A+%2522mooka%2522%250A%257D&)
 
-# Install necessary software
+## Install necessary software
 
 ```
 pip install --upgrade google-cloud
@@ -14,7 +14,7 @@ pip install -t lib -r requirements.txt --ignore-installed --upgrade
 
 ```
 
-# Rebuild and deploy endpoints
+## Rebuild and deploy endpoints
 
 ```
 export PROJECT="affectivecomputing-188820"
