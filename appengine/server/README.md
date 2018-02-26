@@ -7,8 +7,9 @@ Here is a [view of the API](https://apis-explorer.appspot.com/apis-explorer/?bas
 # Install necessary software
 
 ```
-pip install --upgrade google-cloud pip install --upgrade
-google-api-python-client pip install --upgrade appengine-sdk
+pip install --upgrade google-cloud
+pip install --upgrade google-api-python-client
+pip install --upgrade appengine-sdk
 pip install -t lib -r requirements.txt --ignore-installed --upgrade
 
 ```
@@ -16,7 +17,7 @@ pip install -t lib -r requirements.txt --ignore-installed --upgrade
 # Rebuild and deploy endpoints
 
 ```
-export PROJECT="affectivecomputing-188820" 
+export PROJECT="affectivecomputing-188820"
 python lib/endpoints/endpointscfg.py get_openapi_spec main.AffectiveApi \
    --hostname $PROJECT.appspot.com
 gcloud endpoints services deploy affectivev1openapi.json
