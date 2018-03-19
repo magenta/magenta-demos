@@ -36,7 +36,7 @@ magenta_midi \
 MAGENTA_DRUMS=$!
 
 magenta_midi \
-  --input_port="magenta_piano_in,magenta_clock" \
+  --input_ports="magenta_piano_in,magenta_clock" \
   --output_port="magenta_out" \
   --bundle_files=./attention_rnn.mag,./pianoroll_rnn_nade.mag,./performance.mag \
   --qpm=120 \
