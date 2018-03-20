@@ -8,15 +8,16 @@ WEB_SERVER=$!
 cd ..
 
 midi_clock\
-  --output_port="magenta_clock" \
-  --output_channels=0 \
+  --output_ports="magenta_clock" \
+  --qpm=120 \
+  --channel=0 \
   --clock_control_number=1 \
   --log=INFO &
 MIDI_CLOCK=$!
 
 magenta_midi \
   --input_ports="magenta_drums_in,magenta_clock" \
-  --output_port="magenta_out" \
+  --output_ports="magenta_out" \
   --bundle_files=./drum_kit_rnn.mag\
   --qpm=120 \
   --allow_overlap=true \
@@ -37,7 +38,7 @@ MAGENTA_DRUMS=$!
 
 magenta_midi \
   --input_ports="magenta_piano_in,magenta_clock" \
-  --output_port="magenta_out" \
+  --output_ports="magenta_out" \
   --bundle_files=./attention_rnn.mag,./pianoroll_rnn_nade.mag,./performance.mag \
   --qpm=120 \
   --allow_overlap=true \
