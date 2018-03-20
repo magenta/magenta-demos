@@ -1,0 +1,22 @@
+<div id="content-feedback" class="feedback-container">
+  <!-- show the modal to select a new sample image -->
+  <div class="button-container">
+    <button id="show-image-select-modal" type="button" class="mdl-button mdl-button--raised">Pick an image</button>
+
+    <button class="feedback-button mdl-button mdl-js-button mdl-button--raised mdl-js-ripple-effect mdl-color--accent mdl-color-text--accent-contrast"
+            id="video-capture">Scribble</button>
+  </div>
+  <div id="upload-div" class="quickdraw-response-image-container">
+    <div id="captured-frame-div">
+       <canvas id="upload-canvas" class="user-video-display-canvas"></canvas>
+    </div>
+  </div>
+  
+  <div id="sample-div"></div>
+  
+  <img id="sample-img" class="quickdraw-response-image sketch-on-top"
+      src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=' />
+
+  <br>
+  <div id="object-output-div" class='explain-text'></div>
+</div>

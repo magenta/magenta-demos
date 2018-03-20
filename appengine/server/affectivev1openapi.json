@@ -1,0 +1,216 @@
+{
+  "basePath": "/_ah/api",
+  "consumes": [
+    "application/json"
+  ],
+  "definitions": {
+    "MainEmotionDetectorRequest": {
+      "properties": {
+        "episode": {
+          "format": "int64",
+          "type": "string"
+        },
+        "experiment_description": {
+          "type": "string"
+        },
+        "experiment_name": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "svg_id": {
+          "format": "int64",
+          "type": "string"
+        },
+        "time_elapsed": {
+          "format": "int64",
+          "type": "string"
+        },
+        "user_id": {
+          "format": "int64",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MainEmotionDetectorResponse": {
+      "properties": {
+        "emotion_metrics": {
+          "items": {
+            "$ref": "#/definitions/MainEmotionMetric"
+          },
+          "type": "array"
+        },
+        "episode": {
+          "format": "int64",
+          "type": "string"
+        },
+        "face_count": {
+          "format": "int64",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MainEmotionMetric": {
+      "properties": {
+        "confidence": {
+          "format": "double",
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MainGetSvgResponse": {
+      "properties": {
+        "svg_id": {
+          "format": "int64",
+          "type": "string"
+        },
+        "svg_image": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "MainIncrementSketchViewCountResponse": {
+      "properties": {
+        "svg_id": {
+          "format": "int64",
+          "type": "string"
+        },
+        "times_viewed": {
+          "format": "int64",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "host": "affectivecomputing-188820.appspot.com",
+  "info": {
+    "title": "affective",
+    "version": "v1"
+  },
+  "paths": {
+    "/affective/v1/emotion_detector": {
+      "post": {
+        "operationId": "AffectiveApi_emotionDetector",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "schema": {
+              "$ref": "#/definitions/MainEmotionDetectorRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response",
+            "schema": {
+              "$ref": "#/definitions/MainEmotionDetectorResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/affective/v1/get_svg": {
+      "get": {
+        "operationId": "AffectiveApi_getSvg",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "image_class",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response",
+            "schema": {
+              "$ref": "#/definitions/MainGetSvgResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/affective/v1/increment_sketch_view_count": {
+      "get": {
+        "operationId": "AffectiveApi_incrementSketchViewCount",
+        "parameters": [
+          {
+            "format": "int64",
+            "in": "query",
+            "name": "svg_id",
+            "type": "string"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response",
+            "schema": {
+              "$ref": "#/definitions/MainIncrementSketchViewCountResponse"
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/affective/v1/populate_images": {
+      "get": {
+        "operationId": "AffectiveApi_populateImages",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "A successful response"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    }
+  },
+  "produces": [
+    "application/json"
+  ],
+  "schemes": [
+    "https"
+  ],
+  "securityDefinitions": {
+    "api_key": {
+      "in": "query",
+      "name": "key",
+      "type": "apiKey"
+    },
+    "google_id_token": {
+      "authorizationUrl": "",
+      "flow": "implicit",
+      "type": "oauth2",
+      "x-google-issuer": "https://accounts.google.com",
+      "x-google-jwks_uri": "https://www.googleapis.com/oauth2/v3/certs"
+    }
+  },
+  "swagger": "2.0"
+}

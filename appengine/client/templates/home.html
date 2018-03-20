@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <script src="https://apis.google.com/js/client.js?onload=gapi_init"></script>
+  <script type="text/javascript">
+    window.onload = function() {
+      setup('{{static_dir}}', '{{xsrf_token}}', '{{user_id}}',
+            '{{demo_mode}}', '{{get_webcam}}', '{{latent_experiment}}',
+    '{{scribble_mode}}');
+    }
+  </script>
+{% endblock %}
+
+{% block content %}
+{% include 'file_select_dialog.html' %}
+
+<div class="mdl-grid mdl-grid--no-spacing home-grid">
+  {% if latent_experiment %}
+    {% include 'latent_experiment_header.html' %}
+  {% endif %}
+  <div class="mdl-cell mdl-cell--6-col mdl-cell mdl-cell--4-col-phone">
+    {% if experiment_mode %}
+        {% include 'experimenter.html' %}
+    {% elif demo_mode %}
+        {% include 'demo.html' %}
+        {% include 'feedback.html' %}
+    {% elif scribble_mode %}
+        {% include 'scribble.html' %}
+    {% elif latent_experiment %}
+        {% include 'feedback.html' %}
+    {% else %}
+        {% include 'feedback.html' %}
+    {% endif %}
+  </div>
+  <div class="mdl-cell mdl-cell--6-col mdl-cell mdl-cell--4-col-phone">
+    {% include 'webcam.html' %}
+  </div>
+</div><!-- end grid -->
+{% endblock %}

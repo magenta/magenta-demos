@@ -1,0 +1,280 @@
+/* --- Layout --- */
+
+html, body {
+  font-family: 'Roboto', 'Helvetica', sans-serif;
+  margin: 0;
+  padding: 0;
+}
+body {
+  min-height: 100vh;
+}
+
+.affective-reward-container .mdl-layout__header-row {
+  padding-left: 40px;
+  overflow:hidden;
+}
+.affective-reward-container .mdl-layout.is-small-screen .mdl-layout__header-row h3 {
+  font-size: inherit;
+}
+.affective-reward-container .mdl-layout__tab-bar-button {
+  display: none;
+}
+.affective-reward-container .mdl-layout.is-small-screen .mdl-layout__tab-bar .mdl-button {
+  display: none;
+}
+.affective-reward-container .mdl-layout:not(.is-small-screen) .mdl-layout__tab-bar,
+.affective-reward-container .mdl-layout:not(.is-small-screen) .mdl-layout__tab-bar-container {
+  overflow: visible;
+}
+.affective-reward-container .mdl-layout__tab-bar-container {
+  height: 44px;
+  display: flex;
+}
+.affective-reward-container .mdl-layout__tab-bar {
+  padding: 0;
+  padding-left: 16px;
+  box-sizing: border-box;
+  height: 100%;
+  width: 100%;
+}
+.affective-reward-container .mdl-layout__tab-bar .mdl-layout__tab {
+  height: 44px;
+  line-height: 44px;
+}
+.affective-reward-container .mdl-layout__tab-bar .mdl-layout__tab.is-active::after {
+  background-color: white;
+  height: 4px;
+}
+
+
+/* --- Element styles --- */
+footer {
+  min-height: 20px;
+}
+
+footer img {
+  height: 32px;
+}
+
+.home-grid {
+  margin: 20px auto;
+}
+
+.user-video-input-display {
+  width: 75%;
+  height: auto;
+}
+
+.quickdraw-response-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center
+}
+.quickdraw-response-image-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  top: 0;
+  left: 0;
+}
+.quickdraw-response-image-container .quickdraw-response-image {
+  height: 100%;
+  width: 100%
+}
+
+.feedback-container{
+  display: flex;
+  flex-direction: column;
+  align-items: center
+}
+.feedback-button {
+  margin: 20px;
+}
+
+.feelnet-response-container{
+  flex-direction: column;
+  align-items: left;
+}
+
+.user-video-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+/* --- Popup dialog for image selection --- */
+.sample-images-grid img {
+  width: 100%;
+}
+
+dialog.image-select-modal {
+  width: 70%;
+  height: 80%;
+  overflow: auto;
+}
+
+.selected {
+  border: 5px solid tomato;
+  margin: -5px;
+}
+.user-selected-image img {
+  width: 100%;
+}
+
+/* --- Original styles --- */
+#search-box {
+  background: white;
+  border: 1px solid #CCC;
+  border-radius: 3px;
+  font-size: 1em;
+  position: absolute;
+  top: 20px;
+  left: 200px;
+  width: 400px;
+  padding: 5px;
+}
+
+.bolded-emotion {
+  font-weight: bold;
+}
+
+#experiment-descrip {
+  padding: 5px;
+  border: thin solid #E5E5E5;
+}
+
+#experiment-descrip:focus {
+  border: thin solid #4D90FE;
+  outline: none;
+}
+
+.latent-div {
+  padding: 10px;
+}
+
+.form-text {
+  display: inline-block;
+  width: 188px;
+}
+
+.tos-div {
+  margin: 20px;
+}
+
+#upload-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 100;
+}
+
+#canvas {
+  display: none;
+}
+
+#sample-img {
+  display: none;
+  width: 100%;
+  height: 100%;
+}
+
+.sketch-on-top {
+  top: 0;
+  left: 0;
+  z-index: 200;
+}
+
+#detect-objects {
+  z-index: 300;
+}
+
+.button-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+#spinner-explanation {
+  display: none;
+  margin-top: 10px;
+}
+
+#sample-div {
+  position: relative;
+  display: flex;
+}
+
+#object-output-div {
+  margin-bottom: 20px;
+}
+
+.explain-text {
+  font-size: 16px;
+}
+
+/* For animating SVGs */
+@keyframes dash {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-path {
+  animation: dash 5s linear forwards;
+}
+
+
+
+/* Added recording-toast from https://www.w3schools.com/howto/howto_js_recording-toast.asp to replace Material */
+/* The recording-toast - position it at the bottom and in the middle of the screen */
+#recording-toast {
+    visibility: hidden; /* Hidden by default. Visible on click */
+    min-width: 250px; /* Set a default minimum width */
+    margin-left: -125px; /* Divide value of min-width by 2 */
+    background-color: #333; /* Black background color */
+    color: #fff; /* White text color */
+    text-align: center; /* Centered text */
+    border-radius: 2px; /* Rounded borders */
+    padding: 16px; /* Padding */
+    position: fixed; /* Sit on top of the screen */
+    z-index: 1; /* Add a z-index if needed */
+    left: 50%; /* Center the recording-toast */
+    bottom: 30px; /* 30px from the bottom */
+}
+
+/* Show the recording-toast when clicking on a button (class added with JavaScript) */
+#recording-toast.show {
+    visibility: visible; /* Show the recording-toast */
+
+/* Add animation: Take 0.5 seconds to fade in and out the recording-toast. 
+However, delay the fade out process for 2.5 seconds */
+    -webkit-animation: fadein 0.5s, fadeout 0.5s 2.5s;
+    animation: fadein 0.5s, fadeout 0.5s 2.5s;
+}
+
+/* Animations to fade the recording-toast in and out */
+@-webkit-keyframes fadein {
+    from {bottom: 0; opacity: 0;} 
+    to {bottom: 30px; opacity: 1;}
+}
+
+@keyframes fadein {
+    from {bottom: 0; opacity: 0;}
+    to {bottom: 30px; opacity: 1;}
+}
+
+@-webkit-keyframes fadeout {
+    from {bottom: 30px; opacity: 1;} 
+    to {bottom: 0; opacity: 0;}
+}
+
+@keyframes fadeout {
+    from {bottom: 30px; opacity: 1;}
+    to {bottom: 0; opacity: 0;}
+}
