@@ -1,0 +1,23 @@
+{
+  "name": "@magenta/performance-rnn",
+  "version": "1.0.0",
+  "description": "TensorFlow.js demo of PerformanceRNN - not actually published",
+  "main": "index.js",
+  "author": "Magenta",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "deeplearn": "^0.5.1",
+    "tone-piano": "^0.0.12"
+  },
+  "scripts": {
+    "bundle": "browserify --standalone performance_rnn performance_rnn.ts -p [tsify] > bundle.js",
+    "run-demo": "yarn bundle && http-server"
+  },
+  "devDependencies": {
+    "@types/node": "^9.6.5",
+    "browserify": "^16.2.0",
+    "http-server": "^0.11.1",
+    "tsify": "^4.0.0",
+    "typescript": "^2.8.1"
+  }
+}
