@@ -19,4 +19,5 @@ of the AI Duet demo. Can be set up much more easily than the Ableton version.
 * [**Jupyter Notebooks**](/jupyter-notebooks): Jupyter notebooks for all Magenta projects.
 * [**NSynth**](/nsynth): Two demonstrations of our neural audio synthesis
 method.
+* [**Performance RNN Browser Demo**](/performance_rnn): Port of the [Performance RNN](https://magenta.tensorflow.org/performance-rnn) model to the [TensorFlow.js](https://js.tensorflow.org) environment.
 * [**Sketch-RNN**](/sketch-rnn-js): A JavaScript implementation of our Sketch-RNN algorithm, along with 100 pre-trained models.
