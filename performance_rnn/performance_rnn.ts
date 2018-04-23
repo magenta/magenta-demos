@@ -12,23 +12,23 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-import * as dl from 'deeplearn';
+import * as tf from '@tensorflow/tfjs-core';
 import {KeyboardElement} from './keyboard_element';
 
 // tslint:disable-next-line:no-require-imports
 const Piano = require('tone-piano').Piano;
 
-let lstmKernel1: dl.Tensor2D;
-let lstmBias1: dl.Tensor1D;
-let lstmKernel2: dl.Tensor2D;
-let lstmBias2: dl.Tensor1D;
-let lstmKernel3: dl.Tensor2D;
-let lstmBias3: dl.Tensor1D;
-let c: dl.Tensor2D[];
-let h: dl.Tensor2D[];
-let fcB: dl.Tensor1D;
-let fcW: dl.Tensor2D;
-const forgetBias = dl.scalar(1.0);
+let lstmKernel1: tf.Tensor2D;
+let lstmBias1: tf.Tensor1D;
+let lstmKernel2: tf.Tensor2D;
+let lstmBias2: tf.Tensor1D;
+let lstmKernel3: tf.Tensor2D;
+let lstmBias3: tf.Tensor1D;
+let c: tf.Tensor2D[];
+let h: tf.Tensor2D[];
+let fcB: tf.Tensor1D;
+let fcW: tf.Tensor2D;
+const forgetBias = tf.scalar(1.0);
 const activeNotes = new Map<number, number>();
 
 // How many steps to generate per generateStep call.
@@ -50,8 +50,8 @@ const PITCH_HISTOGRAM_SIZE = NOTES_PER_OCTAVE;
 
 const RESET_RNN_FREQUENCY_MS = 30000;
 
-let pitchHistogramEncoding: dl.Tensor1D;
-let noteDensityEncoding: dl.Tensor1D;
+let pitchHistogramEncoding: tf.Tensor1D;
+let noteDensityEncoding: tf.Tensor1D;
 let conditioned = false;
 
 let currentPianoTimeSec = 0;
@@ -95,7 +95,7 @@ function calculateEventSize(): number {
 
 const EVENT_SIZE = calculateEventSize();
 const PRIMER_IDX = 355;  // shift 1s.
-let lastSample = dl.scalar(PRIMER_IDX, 'int32');
+let lastSample = tf.scalar(PRIMER_IDX, 'int32');
 
 const container = document.querySelector('#keyboard');
 const keyboardInterface = new KeyboardElement(container);
@@ -105,9 +105,9 @@ const piano = new Piano({velocities: 4}).toMaster();
 const SALAMANDER_URL = 'https://storage.googleapis.com/' +
     'download.magenta.tensorflow.org/demos/SalamanderPiano/';
 const CHECKPOINT_URL = 'https://storage.googleapis.com/' +
-    'download.magenta.tensorflow.org/models/performance_rnn/dljs/';
+    'download.magenta.tensorflow.org/models/performance_rnn/tfjs';
 
-const isDeviceSupported = dl.ENV.get('WEBGL_VERSION') >= 1;
+const isDeviceSupported = tf.ENV.get('WEBGL_VERSION') >= 1;
 
 if (!isDeviceSupported) {
   document.querySelector('#status').innerHTML =
@@ -122,34 +122,37 @@ let modelReady = false;
 function start() {
   piano.load(SALAMANDER_URL)
       .then(() => {
-        const reader = new dl.CheckpointLoader(CHECKPOINT_URL);
-        return reader.getAllVariables();
+        return fetch(`${CHECKPOINT_URL}/weights_manifest.json`)
+                     .then((response) => response.json())
+                     .then(
+                         (manifest: tf.WeightsManifestConfig) =>
+                             tf.loadWeights(manifest, CHECKPOINT_URL));
       })
-      .then((vars: {[varName: string]: dl.Tensor}) => {
+      .then((vars: {[varName: string]: tf.Tensor}) => {
         document.querySelector('#status').classList.add('hidden');
         document.querySelector('#controls').classList.remove('hidden');
         document.querySelector('#keyboard').classList.remove('hidden');
 
         lstmKernel1 =
             vars['rnn/multi_rnn_cell/cell_0/basic_lstm_cell/kernel'] as
-            dl.Tensor2D;
+            tf.Tensor2D;
         lstmBias1 = vars['rnn/multi_rnn_cell/cell_0/basic_lstm_cell/bias'] as
-            dl.Tensor1D;
+            tf.Tensor1D;
 
         lstmKernel2 =
             vars['rnn/multi_rnn_cell/cell_1/basic_lstm_cell/kernel'] as
-            dl.Tensor2D;
+            tf.Tensor2D;
         lstmBias2 = vars['rnn/multi_rnn_cell/cell_1/basic_lstm_cell/bias'] as
-            dl.Tensor1D;
+            tf.Tensor1D;
 
         lstmKernel3 =
             vars['rnn/multi_rnn_cell/cell_2/basic_lstm_cell/kernel'] as
-            dl.Tensor2D;
+            tf.Tensor2D;
         lstmBias3 = vars['rnn/multi_rnn_cell/cell_2/basic_lstm_cell/bias'] as
-            dl.Tensor1D;
+            tf.Tensor1D;
 
-        fcB = vars['fully_connected/biases'] as dl.Tensor1D;
-        fcW = vars['fully_connected/weights'] as dl.Tensor2D;
+        fcB = vars['fully_connected/biases'] as tf.Tensor1D;
+        fcW = vars['fully_connected/weights'] as tf.Tensor2D;
         modelReady = true;
         resetRnn();
       });
@@ -157,19 +160,19 @@ function start() {
 
 function resetRnn() {
   c = [
-    dl.zeros([1, lstmBias1.shape[0] / 4]),
-    dl.zeros([1, lstmBias2.shape[0] / 4]),
-    dl.zeros([1, lstmBias3.shape[0] / 4]),
+    tf.zeros([1, lstmBias1.shape[0] / 4]),
+    tf.zeros([1, lstmBias2.shape[0] / 4]),
+    tf.zeros([1, lstmBias3.shape[0] / 4]),
   ];
   h = [
-    dl.zeros([1, lstmBias1.shape[0] / 4]),
-    dl.zeros([1, lstmBias2.shape[0] / 4]),
-    dl.zeros([1, lstmBias3.shape[0] / 4]),
+    tf.zeros([1, lstmBias1.shape[0] / 4]),
+    tf.zeros([1, lstmBias2.shape[0] / 4]),
+    tf.zeros([1, lstmBias3.shape[0] / 4]),
   ];
   if (lastSample != null) {
     lastSample.dispose();
   }
-  lastSample = dl.scalar(PRIMER_IDX);
+  lastSample = tf.scalar(PRIMER_IDX, 'int32');
   currentPianoTimeSec = piano.now();
   pianoStartTimestampMs = performance.now() - currentPianoTimeSec * 1000;
   currentLoopId++;
@@ -291,16 +294,17 @@ function updateConditioningParams() {
   const noteDensityIdx = parseInt(densityControl.value, 10) || 0;
   const noteDensity = DENSITY_BIN_RANGES[noteDensityIdx];
   densityDisplay.innerHTML = noteDensity.toString();
+
   noteDensityEncoding =
-      dl.oneHot(
-            dl.tensor1d([noteDensityIdx + 1]), DENSITY_BIN_RANGES.length + 1)
-          .as1D();
+      tf.oneHot(
+          tf.tensor1d([noteDensityIdx + 1], 'int32'),
+          DENSITY_BIN_RANGES.length + 1).as1D();
 
   if (pitchHistogramEncoding != null) {
     pitchHistogramEncoding.dispose();
     pitchHistogramEncoding = null;
   }
-  const buffer = dl.buffer<dl.Rank.R1>([PITCH_HISTOGRAM_SIZE], 'float32');
+  const buffer = tf.buffer<tf.Rank.R1>([PITCH_HISTOGRAM_SIZE], 'float32');
   const pitchHistogramTotal = pitchHistogram.reduce((prev, val) => {
     return prev + val;
   });
@@ -388,21 +392,21 @@ document.getElementById('save-2').onclick = () => {
   updateConditioningParams();
 };
 
-function getConditioning(): dl.Tensor1D {
-  return dl.tidy(() => {
+function getConditioning(): tf.Tensor1D {
+  return tf.tidy(() => {
     if (!conditioned) {
       // TODO(nsthorat): figure out why we have to cast these shapes to numbers.
       // The linter is complaining, though VSCode can infer the types.
       const size = 1 + (noteDensityEncoding.shape[0] as number) +
           (pitchHistogramEncoding.shape[0] as number);
-      const conditioning: dl.Tensor1D =
-          dl.oneHot(dl.tensor1d([0]), size).as1D();
+      const conditioning: tf.Tensor1D =
+          tf.oneHot(tf.tensor1d([0], 'int32'), size).as1D();
       return conditioning;
     } else {
       const axis = 0;
       const conditioningValues =
           noteDensityEncoding.concat(pitchHistogramEncoding, axis);
-      return dl.tensor1d([0]).concat(conditioningValues, axis);
+      return tf.tensor1d([0], 'int32').concat(conditioningValues, axis);
     }
   });
 }
@@ -413,20 +417,21 @@ async function generateStep(loopId: number) {
     return;
   }
 
-  const lstm1 = (data: dl.Tensor2D, c: dl.Tensor2D, h: dl.Tensor2D) =>
-      dl.basicLSTMCell(forgetBias, lstmKernel1, lstmBias1, data, c, h);
-  const lstm2 = (data: dl.Tensor2D, c: dl.Tensor2D, h: dl.Tensor2D) =>
-      dl.basicLSTMCell(forgetBias, lstmKernel2, lstmBias2, data, c, h);
-  const lstm3 = (data: dl.Tensor2D, c: dl.Tensor2D, h: dl.Tensor2D) =>
-      dl.basicLSTMCell(forgetBias, lstmKernel3, lstmBias3, data, c, h);
+  const lstm1 = (data: tf.Tensor2D, c: tf.Tensor2D, h: tf.Tensor2D) =>
+      tf.basicLSTMCell(forgetBias, lstmKernel1, lstmBias1, data, c, h);
+  const lstm2 = (data: tf.Tensor2D, c: tf.Tensor2D, h: tf.Tensor2D) =>
+      tf.basicLSTMCell(forgetBias, lstmKernel2, lstmBias2, data, c, h);
+  const lstm3 = (data: tf.Tensor2D, c: tf.Tensor2D, h: tf.Tensor2D) =>
+      tf.basicLSTMCell(forgetBias, lstmKernel3, lstmBias3, data, c, h);
 
-  let outputs: dl.Scalar[] = [];
-  [c, h, outputs] = dl.tidy(() => {
+  let outputs: tf.Scalar[] = [];
+  [c, h, outputs] = tf.tidy(() => {
     // Generate some notes.
-    const innerOuts: dl.Scalar[] = [];
+    const innerOuts: tf.Scalar[] = [];
     for (let i = 0; i < STEPS_PER_GENERATE_CALL; i++) {
       // Use last sampled output as the next input.
-      const eventInput = dl.oneHot(lastSample.as1D(), EVENT_SIZE).as1D();
+      const eventInput = tf.oneHot(
+        lastSample.as1D(), EVENT_SIZE).as1D();
       // Dispose the last sample from the previous generate call, since we
       // kept it.
       if (i === 0) {
@@ -434,9 +439,9 @@ async function generateStep(loopId: number) {
       }
       const conditioning = getConditioning();
       const axis = 0;
-      const input = conditioning.concat(eventInput, axis);
+      const input = conditioning.concat(eventInput, axis).toFloat();
       const output =
-          dl.multiRNNCell([lstm1, lstm2, lstm3], input.as2D(1, -1), c, h);
+          tf.multiRNNCell([lstm1, lstm2, lstm3], input.as2D(1, -1), c, h);
       c.forEach(c => c.dispose());
       h.forEach(h => h.dispose());
       c = output[0];
@@ -445,14 +450,12 @@ async function generateStep(loopId: number) {
       const outputH = h[2];
       const logits = outputH.matMul(fcW).add(fcB);
 
-      const softmax = logits.as1D().softmax();
-      // TODO(smilkov): Use dl.multinomial once exposed to the user.
-      const sampledOutput = dl.ENV.math.multinomial(softmax, 1).asScalar();
+      const sampledOutput = tf.multinomial(logits.as1D(), 1).asScalar();
 
       innerOuts.push(sampledOutput);
       lastSample = sampledOutput;
     }
-    return [c, h, innerOuts] as [dl.Tensor2D[], dl.Tensor2D[], dl.Scalar[]];
+    return [c, h, innerOuts] as [tf.Tensor2D[], tf.Tensor2D[], tf.Scalar[]];
   });
 
   for (let i = 0; i < outputs.length; i++) {
