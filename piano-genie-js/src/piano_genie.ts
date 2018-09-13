@@ -1,20 +1,19 @@
 import * as tf from '@tensorflow/tfjs-core';
-import * as PianoHeroModel from './model';
-import { PianoHeroUI } from './ui';
-import { PianoHeroUserParameters, ALL_CONFIGS, DEFAULT_CFG_NAME, PianoHeroConfig } from './configs';
+import * as PianoGenieModel from './model';
+import { PianoGenieUI } from './ui';
+import { ALL_CONFIGS, DEFAULT_CFG_NAME, PianoGenieConfig } from './configs';
 import { LSTMState, LSTMStateUtil } from './lstm_state';
 import * as Sample from './sample';
 // tslint:disable-next-line:no-require-imports
 const Piano = require('tone-piano').Piano;
 
-//const SALAMANDER_URL = 'https://storage.googleapis.com/download.magenta.tensorflow.org/demos/SalamanderPiano/';
-const SALAMANDER_URL = 'salamander/';
+const SALAMANDER_URL = 'https://storage.googleapis.com/download.magenta.tensorflow.org/demos/SalamanderPiano/';
 
-class PianoHero {
-  private cfg: PianoHeroConfig;
+class PianoGenie {
+  private cfg: PianoGenieConfig;
   private sampler: any;
-  private model: PianoHeroModel.Model;
-  private ui: PianoHeroUI;
+  private model: PianoGenieModel.Model;
+  private ui: PianoGenieUI;
 
   private buttonToNoteMap: Map<number, number>;
 
@@ -45,14 +44,14 @@ class PianoHero {
     this.extemporeButtonCache = new Sample.ButtonCache(Sample.CACHE_SIZE);
   }
 
-  constructor(cfg: PianoHeroConfig, sampler: any, model: PianoHeroModel.Model, ui: PianoHeroUI) {
+  constructor(cfg: PianoGenieConfig, sampler: any, model: PianoGenieModel.Model, ui: PianoGenieUI) {
     this.cfg = cfg;
     this.model = model;
     this.sampler = sampler;
     this.ui = ui;
 
     this.buttonToNoteMap = new Map<number, number>();
-    this.ui.heroCanvas.resize(this.cfg.modelCfg.getNumButtons());
+    this.ui.genieCanvas.resize(this.cfg.modelCfg.getNumButtons());
 
     if (this.cfg.defaultUserParameters.lookAhead) {
       this.initLookAhead();
@@ -117,7 +116,7 @@ class PianoHero {
 
       // Draw immediately
       this.buttonToNoteMap.set(button, note);
-      this.ui.heroCanvas.redraw(this.buttonToNoteMap);
+      this.ui.genieCanvas.redraw(this.buttonToNoteMap);
       this.redrawPiano();
 
       // Look ahead
@@ -174,7 +173,7 @@ class PianoHero {
 
       // Draw
       this.buttonToNoteMap.set(button, note);
-      this.ui.heroCanvas.redraw(this.buttonToNoteMap);
+      this.ui.genieCanvas.redraw(this.buttonToNoteMap);
       this.redrawPiano();
 
       this.extemporeNeuralCache.push([tf.clone(newStateRepresentative), predsArr]);
@@ -194,7 +193,7 @@ class PianoHero {
     this.sampler.keyUp(note);
     this.buttonToNoteMap.delete(button);
 
-    this.ui.heroCanvas.redraw(this.buttonToNoteMap);
+    this.ui.genieCanvas.redraw(this.buttonToNoteMap);
     this.redrawPiano();
   }
 
@@ -203,7 +202,7 @@ class PianoHero {
     const numButtons = this.cfg.modelCfg.getNumButtons();
 
     for (let i = 0; i < numButtons; ++i) {
-      const hue = this.ui.heroCanvas.getHue(i);
+      const hue = this.ui.genieCanvas.getHue(i);
 
       // Add (bright) predicted buttons
       if (this.cfg.defaultUserParameters.lookAhead && this.lookAheadPreds !== undefined && this.lookAheadPreds.length === numButtons) {
@@ -267,8 +266,8 @@ class PianoHero {
     preds.dispose();
   }
 
-  private changeModel(newCfg: PianoHeroConfig) {
-    const newModel = new PianoHeroModel.Model(newCfg.modelCfg);
+  private changeModel(newCfg: PianoGenieConfig) {
+    const newModel = new PianoGenieModel.Model(newCfg.modelCfg);
     this.ui.setLoading();
 
     newModel.initialize(newCfg.uri).then(() => {
@@ -286,7 +285,7 @@ class PianoHero {
       this.cfg = newCfg;
 
       this.buttonToNoteMap = new Map<number, number>();
-      this.ui.heroCanvas.resize(this.cfg.modelCfg.getNumButtons());
+      this.ui.genieCanvas.resize(this.cfg.modelCfg.getNumButtons());
       this.redrawPiano();
 
       if (this.cfg.defaultUserParameters.lookAhead) {
@@ -302,13 +301,13 @@ class PianoHero {
   }
 }
 
-const ui = new PianoHeroUI();
+const ui = new PianoGenieUI();
 const div = document.getElementById('controller');
 div.appendChild(ui.div);
 
 const defaultCfg = ALL_CONFIGS[DEFAULT_CFG_NAME];
-const defaultModel = new PianoHeroModel.Model(defaultCfg.modelCfg);
-ui.heroCanvas.resize(defaultCfg.modelCfg.getNumButtons());
+const defaultModel = new PianoGenieModel.Model(defaultCfg.modelCfg);
+ui.genieCanvas.resize(defaultCfg.modelCfg.getNumButtons());
 ui.setUserParameters(defaultCfg.defaultUserParameters);
 
 const sampler = new Piano({ velocities: 4 }).toMaster();
@@ -317,6 +316,6 @@ Promise.all([
   sampler.load(SALAMANDER_URL),
   defaultModel.initialize(defaultCfg.uri)])
   .then(() => {
-    new PianoHero(defaultCfg, sampler, defaultModel, ui);
+    new PianoGenie(defaultCfg, sampler, defaultModel, ui);
     ui.setReady();
   });

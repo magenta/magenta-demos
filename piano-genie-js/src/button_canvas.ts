@@ -1,14 +1,14 @@
-export class HeroCanvas {
+export class ButtonCanvas {
   private canvas: HTMLCanvasElement;
   private canvasCtx: CanvasRenderingContext2D;
   private nbuttons: number;
   private hues: number[];
 
   constructor(div: HTMLElement, nbuttons = 8, height = 100, width = 400) {
-    const heroDiv = document.createElement('div');
+    const genieDiv = document.createElement('div');
     this.canvas = document.createElement('canvas');
-    heroDiv.appendChild(this.canvas);
-    div.appendChild(heroDiv);
+    genieDiv.appendChild(this.canvas);
+    div.appendChild(genieDiv);
 
     this.canvasCtx = this.canvas.getContext('2d');
 

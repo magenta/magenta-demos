@@ -1,12 +1,9 @@
 import * as tf from '@tensorflow/tfjs-core';
-import * as PianoHeroModel from './model';
+import * as PianoGenieModel from './model';
 import { LSTMStateUtil } from './lstm_state';
 import * as Sample from './sample';
 import * as test from 'tape';
 import * as fs from 'fs';
-
-
-const EPS = 1e-6;
 
 function loadJSONModelWeights(fp: string) {
   const rawVars = JSON.parse(fs.readFileSync(fp, 'utf8'));
@@ -18,6 +15,7 @@ function loadJSONModelWeights(fp: string) {
   return vars;
 }
 
+const EPS = 1e-6;
 
 test('StpVqLegacy Config Correctness', async (t: test.Test) => {
   const batchSize = 1;
@@ -25,8 +23,8 @@ test('StpVqLegacy Config Correctness', async (t: test.Test) => {
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpVqLegacyCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpVqLegacyCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -66,8 +64,8 @@ test('AutoNoEnc Config Correctness', async (t: test.Test) => {
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.AutoNoEncCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.AutoNoEncCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -99,15 +97,14 @@ test('AutoNoEnc Config Correctness', async (t: test.Test) => {
   t.end();
 });
 
-
 test('StpVq Config Correctness', async (t: test.Test) => {
   const batchSize = 2;
   const modelWeightsFp = 'testdata/stp_vq.json';
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpVqCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpVqCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -139,15 +136,14 @@ test('StpVq Config Correctness', async (t: test.Test) => {
   t.end();
 });
 
-
 test('StpVqAuto Config Correctness', async (t: test.Test) => {
   const batchSize = 2;
   const modelWeightsFp = 'testdata/stp_vq_auto.json';
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpVqAutoCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpVqAutoCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -185,8 +181,8 @@ test('StpIq Config Correctness', async (t: test.Test) => {
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpIqCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpIqCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -218,15 +214,14 @@ test('StpIq Config Correctness', async (t: test.Test) => {
   t.end();
 });
 
-
 test('StpIqAuto Config Correctness', async (t: test.Test) => {
   const batchSize = 2;
   const modelWeightsFp = 'testdata/stp_iq_auto.json';
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpIqAutoCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpIqAutoCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -264,8 +259,8 @@ test('StpIqAutoNb4Fused Config Correctness', async (t: test.Test) => {
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpIqAutoCfg(true, 4);
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpIqAutoCfg(true, 4);
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -303,8 +298,8 @@ test('StpIqAutoDt Config Correctness', async (t: test.Test) => {
 
   const vars = loadJSONModelWeights(modelWeightsFp);
 
-  const cfg = new PianoHeroModel.StpIqAutoDtCfg(true);
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpIqAutoDtCfg(true);
+  const model = new PianoGenieModel.Model(cfg);
 
   await model.initialize(undefined, vars);
 
@@ -337,8 +332,8 @@ test('StpIqAutoDt Config Correctness', async (t: test.Test) => {
 });
 
 test('Test State Copy', async (t: test.Test) => {
-  const cfg = new PianoHeroModel.StpVqCfg();
-  const model = new PianoHeroModel.Model(cfg);
+  const cfg = new PianoGenieModel.StpVqCfg();
+  const model = new PianoGenieModel.Model(cfg);
 
   const batchSize = 8;
   const chosenItem = 3;

@@ -1,11 +1,11 @@
-import { HeroCanvas } from './hero_canvas';
+import { ButtonCanvas } from './genie_canvas';
 import { PianoCanvas } from './piano_canvas';
 import { SamplingType} from './sample';
-import { PianoHeroUserParameters, ALL_CONFIGS, DEFAULT_CFG_NAME } from './configs';
+import { PianoGenieUserParameters, ALL_CONFIGS, DEFAULT_CFG_NAME } from './configs';
 
 const SLIDER_MAX_VALUE = 10000;
 
-export class PianoHeroUI {
+export class PianoGenieUI {
   readonly div: HTMLDivElement;
   private loadingDiv: HTMLDivElement;
   private contentDiv: HTMLDivElement;
@@ -16,7 +16,7 @@ export class PianoHeroUI {
   private neuralCacheThetaSlider: HTMLInputElement;
   private cacheLambdaSlider: HTMLInputElement;
   readonly resetBtn: HTMLButtonElement;
-  readonly heroCanvas: HeroCanvas;
+  readonly genieCanvas: ButtonCanvas;
   readonly pianoCanvas: PianoCanvas;
 
   constructor() {
@@ -121,7 +121,7 @@ export class PianoHeroUI {
     this.contentDiv.appendChild(resetDiv);
 
     // Create button/piano interfaces
-    this.heroCanvas = new HeroCanvas(this.contentDiv);
+    this.genieCanvas = new ButtonCanvas(this.contentDiv);
     this.pianoCanvas = new PianoCanvas(this.contentDiv);
 
     // Add loading/content divs to master
@@ -130,7 +130,7 @@ export class PianoHeroUI {
     this.div.appendChild(this.contentDiv);
   }
 
-  setUserParameters(params: PianoHeroUserParameters) {
+  setUserParameters(params: PianoGenieUserParameters) {
     // Set lookAhead
     this.lookAheadCheckBox.checked = params.lookAhead;
 
@@ -179,7 +179,7 @@ export class PianoHeroUI {
       categoricalTemperature: categoricalTemperature,
       neuralCacheTheta: neuralCacheTheta,
       cacheLambda: cacheLambda
-    } as PianoHeroUserParameters;
+    } as PianoGenieUserParameters;
   }
 
   setLoading() {
