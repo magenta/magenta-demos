@@ -4,7 +4,7 @@ export class PianoCanvas {
   private midiNoteToBoundingBox: Map<number, number[]>;
   private midiNoteWhiteKeys: Set<number>;
 
-  constructor(div: HTMLElement, height = 100, width = 400) {
+  constructor(div: HTMLElement, height = 110, width = 450) {
     const pianoDiv = document.createElement('div');
     this.canvas = document.createElement('canvas');
     pianoDiv.appendChild(this.canvas);

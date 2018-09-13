@@ -4,7 +4,7 @@ export class ButtonCanvas {
   private nbuttons: number;
   private hues: number[];
 
-  constructor(div: HTMLElement, nbuttons = 8, height = 100, width = 400) {
+  constructor(div: HTMLElement, nbuttons = 8, height = 110, width = 450) {
     const genieDiv = document.createElement('div');
     this.canvas = document.createElement('canvas');
     genieDiv.appendChild(this.canvas);
@@ -16,7 +16,7 @@ export class ButtonCanvas {
     this.redraw(null);
   }
 
-  resize(nbuttons: number, height = 100, width = 400) {
+  resize(nbuttons: number, height = 110, width = 450) {
     this.nbuttons = nbuttons;
     this.canvas.height = height;
     this.canvas.width = width;

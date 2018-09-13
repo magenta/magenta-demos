@@ -1,4 +1,4 @@
-import { ButtonCanvas } from './genie_canvas';
+import { ButtonCanvas } from './button_canvas';
 import { PianoCanvas } from './piano_canvas';
 import { SamplingType} from './sample';
 import { PianoGenieUserParameters, ALL_CONFIGS, DEFAULT_CFG_NAME } from './configs';

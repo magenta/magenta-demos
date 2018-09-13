@@ -20,7 +20,7 @@
     "typescript": "^2.9.2"
   },
   "scripts": {
-    "build": "browserify src/piano_hero.ts -p [tsify] > src/piano_hero_bundle.js",
+    "build": "browserify src/piano_genie.ts -p [tsify] > src/piano_genie_bundle.js",
     "test": "ts-node node_modules/tape/bin/tape src/*_test.ts",
     "serve": "http-server src"
   }

@@ -5,7 +5,7 @@ import { ALL_CONFIGS, DEFAULT_CFG_NAME, PianoGenieConfig } from './configs';
 import { LSTMState, LSTMStateUtil } from './lstm_state';
 import * as Sample from './sample';
 // tslint:disable-next-line:no-require-imports
-const Piano = require('tone-piano').Piano;
+const PianoSampler = require('tone-piano').Piano;
 
 const SALAMANDER_URL = 'https://storage.googleapis.com/download.magenta.tensorflow.org/demos/SalamanderPiano/';
 
@@ -302,7 +302,7 @@ class PianoGenie {
 }
 
 const ui = new PianoGenieUI();
-const div = document.getElementById('controller');
+const div = document.getElementById('piano-genie-ui');
 div.appendChild(ui.div);
 
 const defaultCfg = ALL_CONFIGS[DEFAULT_CFG_NAME];
@@ -310,7 +310,7 @@ const defaultModel = new PianoGenieModel.Model(defaultCfg.modelCfg);
 ui.genieCanvas.resize(defaultCfg.modelCfg.getNumButtons());
 ui.setUserParameters(defaultCfg.defaultUserParameters);
 
-const sampler = new Piano({ velocities: 4 }).toMaster();
+const sampler = new PianoSampler({ velocities: 4 }).toMaster();
 
 Promise.all([
   sampler.load(SALAMANDER_URL),
