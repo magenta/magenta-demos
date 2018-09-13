@@ -28,12 +28,11 @@ export class PianoGenieUI {
 
     // Create content div
     this.contentDiv = document.createElement('div');
-    const configDiv = document.createElement('div');
-    this.cfgSelect = document.createElement('select');
-    configDiv.appendChild(this.cfgSelect);
-    this.contentDiv.appendChild(configDiv);
 
     // Create model selector
+    const modelDiv = document.createElement('div');
+    modelDiv.appendChild(document.createTextNode('Model'));
+    this.cfgSelect = document.createElement('select');
     const cfg_keys = Object.keys(ALL_CONFIGS);
     for (let i = 0; i < cfg_keys.length; ++i) {
       const opt = document.createElement('option');
@@ -44,12 +43,20 @@ export class PianoGenieUI {
       }
       this.cfgSelect.appendChild(opt);
     }
+    modelDiv.appendChild(this.cfgSelect);
+
+    // Create reset button
+    this.resetBtn = document.createElement('button');
+    this.resetBtn.appendChild(document.createTextNode('Reset'));
+    modelDiv.appendChild(this.resetBtn);
+    this.contentDiv.appendChild(modelDiv);
 
     // Create look ahead check box
     const lookAheadCheckBoxDiv = document.createElement('div');
     this.lookAheadCheckBox = document.createElement('input');
     this.lookAheadCheckBox.setAttribute('type', 'checkbox');
     lookAheadCheckBoxDiv.appendChild(this.lookAheadCheckBox);
+    // TODO(chrisdonahue): Re-enable this later
     //this.contentDiv.appendChild(lookAheadCheckBoxDiv);
 
     // Create sampling type radio button
@@ -78,12 +85,14 @@ export class PianoGenieUI {
       samplingTypeRadioDiv.appendChild(radioButton);
       this.samplingTypeRadio.push(radioButton);
     }
-    this.contentDiv.appendChild(samplingTypeRadioDiv);
+    // TODO(chrisdonahue): Re-enable this later
+    //this.contentDiv.appendChild(samplingTypeRadioDiv);
 
     // Create temperature slider
     const categoricalTemperatureSliderDiv = document.createElement('div');
     this.categoricalTemperatureSlider = document.createElement('input');
     this.categoricalTemperatureSlider.setAttribute('type', 'range');
+    this.categoricalTemperatureSlider.setAttribute('style', 'width:250px');
     this.categoricalTemperatureSlider.setAttribute('min', String(0));
     this.categoricalTemperatureSlider.setAttribute('max', String(SLIDER_MAX_VALUE));
     //this.categoricalTemperatureSlider.setAttribute('value', String(SLIDER_MAX_VALUE));
@@ -100,7 +109,8 @@ export class PianoGenieUI {
     //this.neuralCacheThetaSlider.setAttribute('value', String(0));
     neuralCacheThetaSliderDiv.appendChild(document.createTextNode('Theta'));
     neuralCacheThetaSliderDiv.appendChild(this.neuralCacheThetaSlider);
-    this.contentDiv.appendChild(neuralCacheThetaSliderDiv);
+    // TODO(chrisdonahue): Re-enable this later
+    //this.contentDiv.appendChild(neuralCacheThetaSliderDiv);
 
     // Create cache lambda slider
     const cacheLambdaSliderDiv = document.createElement('div');
@@ -111,14 +121,8 @@ export class PianoGenieUI {
     //this.cacheLambdaSlider.setAttribute('value', String(0));
     cacheLambdaSliderDiv.appendChild(document.createTextNode('Lambda'));
     cacheLambdaSliderDiv.appendChild(this.cacheLambdaSlider);
-    this.contentDiv.appendChild(cacheLambdaSliderDiv);
-
-    // Create reset button
-    const resetDiv = document.createElement('div');
-    this.resetBtn = document.createElement('button');
-    this.resetBtn.appendChild(document.createTextNode('Reset'));
-    resetDiv.appendChild(this.resetBtn);
-    this.contentDiv.appendChild(resetDiv);
+    // TODO(chrisdonahue): Re-enable this later
+    //this.contentDiv.appendChild(cacheLambdaSliderDiv);
 
     // Create button/piano interfaces
     this.genieCanvas = new ButtonCanvas(this.contentDiv);
