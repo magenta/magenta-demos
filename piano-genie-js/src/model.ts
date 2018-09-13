@@ -11,7 +11,6 @@ export class ModelCfg {
   RNN_UNFUSED_LEGACY = true;
 
   STP_EMB_VQ = false;
-  STP_EMB_VQ_EMBEDDING_SIZE = 64;
   STP_EMB_VQ_CODEBOOK_SIZE = 8;
 
   STP_EMB_IQ = false;
