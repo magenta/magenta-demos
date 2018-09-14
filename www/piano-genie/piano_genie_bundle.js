@@ -44670,6 +44670,7 @@ limitations under the License.
 ==============================================================================*/
 exports.__esModule = true;
 var PianoGenieModel = require("./model");
+var BASE_PATH = 'https://storage.googleapis.com/magentadata/js/checkpoints/piano_genie/';
 var categoricalUserParameters = {
     lookAhead: true,
     samplingType: 1 /* Categorical */,
@@ -44687,55 +44688,55 @@ var categoricalDeltaTimeUserParameters = {
 exports.ALL_CONFIGS = {
     epiano_auto_no_enc: {
         name: 'Autoregressive',
-        uri: 'model/epiano/auto_no_enc_483027',
+        uri: BASE_PATH + 'model/epiano/auto_no_enc_483027',
         modelCfg: new PianoGenieModel.AutoNoEncCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_auto_no_enc_dt: {
         name: 'Autoregressive + Delta Time',
-        uri: 'model/epiano/auto_no_enc_dt_516217',
+        uri: BASE_PATH + 'model/epiano/auto_no_enc_dt_516217',
         modelCfg: new PianoGenieModel.AutoNoEncDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_vq_auto: {
         name: 'Step VQ-VAE + Autoregression',
-        uri: 'model/epiano/stp_vq4_auto_380486',
+        uri: BASE_PATH + 'model/epiano/stp_vq4_auto_380486',
         modelCfg: new PianoGenieModel.StpVqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_vq_auto_dt: {
         name: 'Step VQ-VAE + Autoregression + Delta Time',
-        uri: 'model/epiano/stp_vq4_auto_dt_337481',
+        uri: BASE_PATH + 'model/epiano/stp_vq4_auto_dt_337481',
         modelCfg: new PianoGenieModel.StpVqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_iq_auto: {
         name: 'Step IQ + Autoregression',
-        uri: 'model/epiano/stp_iq_auto_394598',
+        uri: BASE_PATH + 'model/epiano/stp_iq_auto_394598',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour: {
         name: 'Step IQ + Autoregression + Contour',
-        uri: 'model/epiano/stp_iq_auto_contour_175255',
+        uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_175255',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour_dt: {
         name: 'Step IQ + Autoregression + Contour + Delta Time',
-        uri: 'model/epiano/stp_iq_auto_contour_dt_166006',
+        uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_dt_166006',
         modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_iq_auto_contour_deviate: {
         name: 'Step IQ + Autoregression + Contour + Deviate',
-        uri: 'model/epiano/stp_iq_auto_contour_deviate_114680',
+        uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_deviate_114680',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour_deviate_dt: {
         name: 'Step IQ + Autoregression + Contour + Deviate + Delta Time',
-        uri: 'model/epiano/stp_iq_auto_contour_deviate_dt_92452',
+        uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_deviate_dt_92452',
         modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     }
