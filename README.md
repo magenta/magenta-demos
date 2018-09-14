@@ -21,4 +21,4 @@ of the AI Duet demo. Can be set up much more easily than the Ableton version.
 method.
 * [**Performance RNN Browser Demo**](/performance_rnn): Port of the [Performance RNN](https://magenta.tensorflow.org/performance-rnn) model to the [TensorFlow.js](https://js.tensorflow.org) environment.
 * [**Sketch-RNN**](/sketch-rnn-js): A JavaScript implementation of our Sketch-RNN algorithm, along with 100 pre-trained models.
-* [**Piano Genie**](/piano-genie-js): The user interface for Piano Genie, a project allows you to play the piano without any experience.
+* [**Piano Genie**](/piano-genie-js): The user interface for Piano Genie, a demo that allows you to control a full piano via an intelligent 8-button interface.

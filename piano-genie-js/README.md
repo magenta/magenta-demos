@@ -1,6 +1,6 @@
 # Piano Genie Demo
 
-This model is the user interface and inference component of [Piano Genie](https://github.com/tensorflow/magenta/tree/master/magenta/models/piano_genie). Piano Genie uses machine learning to create a generative piano which allows you to play the piano without any experience.
+This model is the user interface and inference component of [Piano Genie](https://github.com/tensorflow/magenta/tree/master/magenta/models/piano_genie). Piano Genie allows you to control an 88-key piano via an intelligent 8-button interface.
 
 ## Demo
 
