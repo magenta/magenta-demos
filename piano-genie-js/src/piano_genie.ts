@@ -19,6 +19,7 @@ import { PianoGenieUI } from './ui';
 import { ALL_CONFIGS, DEFAULT_CFG_NAME, PianoGenieConfig } from './configs';
 import { LSTMState, LSTMStateUtil } from './lstm_state';
 import * as Sample from './sample';
+import * as Tone from 'tone';
 // tslint:disable-next-line:no-require-imports
 const PianoSampler = require('tone-piano').Piano;
 
@@ -77,6 +78,9 @@ class PianoGenie {
 
     // Bind keyboard controls
     document.onkeydown = (evt: KeyboardEvent) => {
+      if (Tone.context.state !== 'running') {
+        Tone.context.resume();
+      }
       const key = evt.keyCode;
       let button = key - 49;
       if (button >= 0 && button < 8) {

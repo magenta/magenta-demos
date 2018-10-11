@@ -6,6 +6,7 @@
   "dependencies": {
     "@tensorflow/tfjs": "^0.12.3",
     "@tensorflow/tfjs-core": "^0.12.4",
+    "tone": "^0.12.80",
     "tone-piano": "^0.0.12"
   },
   "devDependencies": {
