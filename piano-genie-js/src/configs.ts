@@ -92,18 +92,6 @@ export const ALL_CONFIGS: { [key: string]: PianoGenieConfig } = {
     modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
     defaultUserParameters: categoricalDeltaTimeUserParameters
   },
-  epiano_stp_iq_auto_contour_deviate: {
-    name: 'Step IQ + Autoregression + Contour + Deviate',
-    uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_deviate_114680',
-    modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
-    defaultUserParameters: categoricalUserParameters
-  },
-  epiano_stp_iq_auto_contour_deviate_dt: {
-    name: 'Step IQ + Autoregression + Contour + Deviate + Delta Time',
-    uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_deviate_dt_92452',
-    modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
-    defaultUserParameters: categoricalDeltaTimeUserParameters
-  },
 }
 
 export const DEFAULT_CFG_NAME = 'epiano_stp_iq_auto_contour_dt';
