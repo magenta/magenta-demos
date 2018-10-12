@@ -44727,18 +44727,6 @@ exports.ALL_CONFIGS = {
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_dt_166006',
         modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
-    },
-    epiano_stp_iq_auto_contour_deviate: {
-        name: 'Step IQ + Autoregression + Contour + Deviate',
-        uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_deviate_114680',
-        modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
-        defaultUserParameters: categoricalUserParameters
-    },
-    epiano_stp_iq_auto_contour_deviate_dt: {
-        name: 'Step IQ + Autoregression + Contour + Deviate + Delta Time',
-        uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_deviate_dt_92452',
-        modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
-        defaultUserParameters: categoricalDeltaTimeUserParameters
     }
 };
 exports.DEFAULT_CFG_NAME = 'epiano_stp_iq_auto_contour_dt';
@@ -45306,6 +45294,7 @@ var ui_1 = require("./ui");
 var configs_1 = require("./configs");
 var lstm_state_1 = require("./lstm_state");
 var Sample = require("./sample");
+var Tone = require("tone");
 // tslint:disable-next-line:no-require-imports
 var PianoSampler = require('tone-piano').Piano;
 var SALAMANDER_URL = 'https://storage.googleapis.com/download.magenta.tensorflow.org/demos/SalamanderPiano/';
@@ -45327,6 +45316,9 @@ var PianoGenie = /** @class */ (function () {
         }
         // Bind keyboard controls
         document.onkeydown = function (evt) {
+            if (Tone.context.state !== 'running') {
+                Tone.context.resume();
+            }
             var key = evt.keyCode;
             var button = key - 49;
             if (button >= 0 && button < 8) {
@@ -45552,7 +45544,7 @@ Promise.all([
     ui.setReady();
 });
 
-},{"./configs":154,"./lstm_state":155,"./model":156,"./sample":159,"./ui":160,"@tensorflow/tfjs-core":8,"tone-piano":151}],159:[function(require,module,exports){
+},{"./configs":154,"./lstm_state":155,"./model":156,"./sample":159,"./ui":160,"@tensorflow/tfjs-core":8,"tone":152,"tone-piano":151}],159:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
