@@ -12,8 +12,8 @@ mag_files = [
 for mag_file in mag_files:
   output_file = mag_file.split('/')[-1]
   if os.path.exists(output_file):
-    print 'File %s already present' % mag_file
+    print('File %s already present' % mag_file)
   else:
-    print 'Writing %s to %s' % (mag_file, output_file)
+    print('Writing %s to %s' % (mag_file, output_file))
     urlopener = urllib.URLopener()
     urlopener.retrieve(mag_file, output_file)
