@@ -1,5 +1,9 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import os
-import urllib
+from six.moves.urllib.request import URLopener
 
 # This script downloads these .mag files if not already present.
 mag_files = [
@@ -15,5 +19,5 @@ for mag_file in mag_files:
     print('File %s already present' % mag_file)
   else:
     print('Writing %s to %s' % (mag_file, output_file))
-    urlopener = urllib.URLopener()
+    urlopener = URLopener()
     urlopener.retrieve(mag_file, output_file)
