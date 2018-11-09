@@ -1,3 +1,23 @@
+# Copyright 2017 Google Inc
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+#     https://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Adapted from the Open NSynth Super audio generation pipeline found at
+# https://github.com/googlecreativelab/open-nsynth-super/tree/master/audio
+# Changes were made to ensure output audio files conform with the NSynth
+# MaxForLive device's epectations and so that the entire pipeline could be
+# run at once.
+
 import json, os, sys, re, subprocess, fnmatch, time
 from os.path import basename, isfile
 from math import floor, ceil
@@ -229,7 +249,7 @@ def generate_options_file():
     num_interpolations             = str(int((settings['resolution'] - 1) * grid_size + 1))
     num_instruments                = str(len(instrument_grid))
     name                           = settings['name']
-    
+
     with open(outut_file, 'w') as options:
         options.write('1, ')
         options.write(min_pitch)
