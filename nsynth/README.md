@@ -20,11 +20,11 @@ By following this guide, you will be able to prepare audio samples in WAV/AIF fo
 A fast computer is required to produce audio in a reasonable amount of time; however it is possible to speed up the process by simplifying the task. The variables are:
 
 - Batch size (per process)
-- Number of interpolation combinations
+- Number of instruments
 - Number of example pitches
 - Grid resolution
 
-As an example, a complex interpolation task (e.g. to produce the sounds for the default settings.json in this repository, the source audio for generating this multigrid is available [here](https://storage.googleapis.com/open-nsynth-super/audio/onss_source_audio.tar.gz)) includes 16 different instruments, a 9x9 grid resolution (between every set of 4 instruments), and 16 example pitches. This task takes around 9 hours on a GTX 1080 Ti and will generate 10000 audio files total.
+As an example, a complex interpolation task including 16 different instruments, a 9x9 grid resolution, and 16 example pitches takes around 9 hours on a GTX 1080 Ti and will generate 10000 audio files total. The default settings.json in this repository will generate a multigrid (4 grids in one) with these properties (source audio is available [here](https://storage.googleapis.com/open-nsynth-super/audio/onss_source_audio.tar.gz)).
 
 You will need a Unix-like PC or server with at least one CUDA-compatible GPU and magenta, sox, and lame installed.
 
@@ -51,7 +51,7 @@ According to the default settings, these files should be created at the followin
 - 84 (C7)
 
 
-For instruments that are out of range at any of these pitches, you can pitch down or up using software, or repeat the nearest ‘available’ pitch to fill in the gaps. Alternatively, for unpitched sounds like drums you can maintain a single pitch across all notes, or pitch each one manually.
+For instruments that are out of range at any of these pitches, you can pitch down or up using software, or repeat the nearest "available" pitch to fill in the gaps. Alternatively, for unpitched sounds like drums you can maintain a single pitch across all notes, or pitch each one manually.
 
 Changing these conditioning values can result in interesting different combinations and is one of the most interesting and powerful ways to alter the behavior of the instrument.
 
@@ -69,7 +69,7 @@ guitar_28.wav
 ...
 ```
 
-Note that a section of the magenta pipeline (`nsynth_save_embeddings`) sometimes truncates a couple characters from the start of filenames. generate.py should automatically correct this, however, it might "correct" files in unexpected ways if any filenames are substrings of other file names (having `guitar` and `acoustic_guitar` instruments in the same grid is dangerous while `electric_guitar` and `acoustic_guitar` are not)
+Note that a section of the magenta pipeline (specifically nsynth_save_embeddings) sometimes truncates a couple characters from the start of filenames. generate.py should automatically catch this, however, it might "correct" files in unexpected ways if any filenames are substrings of other file names (having 'guitar' and 'acoustic_guitar' instruments in the same grid is dangerous while 'electric_guitar' and 'acoustic_guitar' is not)
 
 Audio should be saved as 16-bit integer wave files at 16000kHz. See the following soxi output for a valid input file:
 
@@ -86,7 +86,7 @@ Bit Rate       : 256k
 Sample Encoding: 16-bit Signed Integer PCM
 ```
 
-When you have selected the input audio files you wish to interpolate, they should be placed in this directory in a folder named `audio_input`. (n.b. AIF files will be converted to WAV automatically)
+When you have selected the input audio files you wish to interpolate, they should be placed in this directory in a folder named `audio_input` (n.b. AIF files will be converted to WAV automatically).
 
 
 ### 2. Update the settings file
@@ -95,15 +95,15 @@ The generation process is governed by the settings.json file. For example:
 ```
 {
 	"instruments": [["car","cleanbass", "cleanguitar", "crotales"],
-								  ["marimba", "electricpiano", "grungebass", "electrotom"],
-								  ["flute", "electrokick", "distortedguitar", "resopad"],
-								  ["rhodes", "sitar", "snare", "susvox"]],
+                  ["marimba", "electricpiano", "grungebass", "electrotom"],
+                  ["flute", "electrokick", "distortedguitar", "resopad"],
+                  ["rhodes", "sitar", "snare", "susvox"]],
 	"magenta_dir":	"~/magenta",
-	"pitches":   		[24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84],
+	"pitches":      [24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84],
 	"resolution": 	9,
 	"final_length": 64000,
-	"gpus": 				1,
-	"name": 				"multigrid_4"
+	"gpus":         1,
+	"name":         "multigrid_4"
 }
 ```
 
@@ -127,6 +127,6 @@ Set this number to match the number of GPUs your system is equipped with. This w
 
 ### 3. Run generate.py
 
-With all of the settings adjusted to reflect the input audio and the files named correctly in `audio_input`, generate.py can be run.
+With all of the settings adjusted to reflect the input audio and the files named correctly in 'audio_input', generate.py can be run.
 
-This should generate embeddings, interpolate them, and then generate the audio for the entire grid. The generated grid folder will be placed in `output_grids` and can then be opened in the NSynth MaxForLive device by selecting the folder in the 'Load Sounds' browser.
+This should generate embeddings, interpolate them, and then generate the audio for the entire grid. The generated grid folder will be placed in 'output_grids' and can then be opened in the NSynth MaxForLive device by selecting the folder in the 'Load Sounds' browser.
