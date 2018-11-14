@@ -44687,43 +44687,43 @@ var categoricalDeltaTimeUserParameters = {
 };
 exports.ALL_CONFIGS = {
     epiano_auto_no_enc: {
-        name: 'Autoregressive',
+        name: 'Language Model',
         uri: BASE_PATH + 'model/epiano/auto_no_enc_483027',
         modelCfg: new PianoGenieModel.AutoNoEncCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_auto_no_enc_dt: {
-        name: 'Autoregressive + Delta Time',
+        name: 'Language Model w/ Timing',
         uri: BASE_PATH + 'model/epiano/auto_no_enc_dt_516217',
         modelCfg: new PianoGenieModel.AutoNoEncDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_vq_auto: {
-        name: 'Step VQ-VAE + Autoregression',
+        name: 'VQ-VAE',
         uri: BASE_PATH + 'model/epiano/stp_vq4_auto_380486',
         modelCfg: new PianoGenieModel.StpVqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_vq_auto_dt: {
-        name: 'Step VQ-VAE + Autoregression + Delta Time',
+        name: 'VQ-VAE w/ Timing',
         uri: BASE_PATH + 'model/epiano/stp_vq4_auto_dt_337481',
         modelCfg: new PianoGenieModel.StpVqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_iq_auto: {
-        name: 'Step IQ + Autoregression',
+        name: 'IQAE',
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_394598',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour: {
-        name: 'Step IQ + Autoregression + Contour',
+        name: 'IQAE w/ Contour Alignment',
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_175255',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour_dt: {
-        name: 'Step IQ + Autoregression + Contour + Delta Time',
+        name: '(Best) IQAE w/ Contour Alignment and Timing',
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_dt_166006',
         modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
