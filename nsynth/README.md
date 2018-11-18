@@ -69,7 +69,7 @@ guitar_28.wav
 ...
 ```
 
-Note that a section of the magenta pipeline (specifically nsynth_save_embeddings) sometimes truncates a couple characters from the start of filenames. generate.py should automatically catch this, however, it might "correct" files in unexpected ways if any filenames are substrings of other file names (having 'guitar' and 'acoustic_guitar' instruments in the same grid is dangerous while 'electric_guitar' and 'acoustic_guitar' is not)
+Note that a section of the magenta pipeline (specifically nsynth_save_embeddings) sometimes truncates a couple characters from the start of filenames. generate.py should automatically catch this, however, it might "correct" files in unexpected ways if any filenames are substrings of other file names (having 'guitar' and 'acoustic_guitar' instruments in the same grid is dangerous while 'electric_guitar' and 'acoustic_guitar' is not).
 
 Audio should be saved as 16-bit integer wave files at 16000kHz. See the following soxi output for a valid input file:
 
