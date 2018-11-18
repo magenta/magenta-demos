@@ -98,11 +98,13 @@ The generation process is governed by the settings.json file. For example:
                   ["marimba", "electricpiano", "grungebass", "electrotom"],
                   ["flute", "electrokick", "distortedguitar", "resopad"],
                   ["rhodes", "sitar", "snare", "susvox"]],
-	"magenta_dir":	"~/magenta",
+	"checkpoint_dir":"~/magenta/magenta/models/nsynth/wavenet-ckpt",
 	"pitches":      [24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84],
-	"resolution": 	9,
-	"final_length": 64000,
-	"gpus":         1,
+	"resolution": 	           9,
+	"final_length":            64000,
+	"gpus":                    1,
+	"batch_size_embeddings":   32,
+	"batch_size_generate":     256,
 	"name":         "multigrid_4"
 }
 ```
@@ -110,8 +112,8 @@ The generation process is governed by the settings.json file. For example:
 ##### instruments
 The 2 dimensional list of instruments to be interpolated. The placement of the instrument names in this grid determines where they will appear in the NSynth device. The first entry of the first list will be in the bottom left of the grid, while the last entry in the last list will be in the top right. The lists should reflect the instrument filenames, i.e. ‘guitar’ will point generate.py to all the correctly named ‘guitar_24.wav’, ‘guitar_28.wav’ files.
 
-##### magenta_dir
-This should point to the root directory of your Magenta installation. This is used to locate the WaveNet checkpoint file so should be set to the Magenta installation containing that file if you have multiple installations.
+##### checkpoint_dir
+This should point to the directory containing the WaveNet checkpoint file to use.
 
 ##### pitches
 This is a list of the different input pitches that should be interpolated by the pipeline. Notes between these pitches will be repitched versions of the nearest generated audio files.
@@ -125,8 +127,14 @@ The length in samples of the output wave files (can be calculated by multiplying
 ##### gpus
 Set this number to match the number of GPUs your system is equipped with. This will control the number of batches the processes are split into (enabling much faster processing times).
 
+##### batch_size_embeddings
+The size of batches for embedding generation. Larger batch sizes use more VRAM. Should be set as high as possible for a given GPU and sample length for maximum speed. Using a 4 second sample length a single GTX 1080 Ti with 11 GB VRAM can handle batches of about 48.
+
+##### batch_size_generate
+The size of batches for audio generation. Once again, larger batch sizes use more VRAM. A single GTX 1080 Ti with 11 GB VRAM can handle batches of about 512.
+
 ### 3. Run generate.py
 
-With all of the settings adjusted to reflect the input audio and the files named correctly in 'audio_input', generate.py can be run.
+With all of the settings adjusted to reflect the input audio and the files named correctly in 'audio_input', generate.py can be run from this directory.
 
 This should generate embeddings, interpolate them, and then generate the audio for the entire grid. The generated grid folder will be placed in 'output_grids' and can then be opened in the NSynth MaxForLive device by selecting the folder in the 'Load Sounds' browser.
