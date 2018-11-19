@@ -1,0 +1,14 @@
+{
+    "instruments": [["car","cleanbass", "cleanguitar", "crotales"],
+                    ["marimba", "electricpiano", "grungebass", "electrotom"],
+                    ["flute", "electrokick", "distortedguitar", "resopad"],
+                    ["rhodes", "sitar", "snare", "susvox"]],
+    "checkpoint_dir":"~/magenta/magenta/models/nsynth/wavenet-ckpt",
+    "pitches":      [24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84],
+    "resolution":              9,
+    "final_length":            64000,
+    "gpus":                    1,
+    "batch_size_embeddings":   32,
+    "batch_size_generate":     256,
+    "name":         "multigrid_4"
+}
