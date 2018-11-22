@@ -239,6 +239,12 @@ export class Model {
     }
 
     this.initialized = true;
+
+    // Run the network once to avoid long malloc on first button press.
+    tf.tidy(() => {
+      const coldStartLastState = this.createZeroState(1);
+      this.evaluate(coldStartLastState, [0], [-1], [0.]);
+    });
   }
 
   evaluate(
