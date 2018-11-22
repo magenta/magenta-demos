@@ -118,8 +118,11 @@ class PianoGenie {
 
       if (key === 32) {
         this.sustainPedalDown = false;
+        const heldButtonNotes = new Set<number>(this.buttonToNoteMap.values());
         this.sustainedNotes.forEach((note: number) => {
-          this.sampler.keyUp(note);
+          if (!heldButtonNotes.has(note)) {
+            this.sampler.keyUp(note);
+          }
         });
         this.sustainedNotes.clear();
       }
