@@ -36,6 +36,8 @@ class PianoGenie {
   private sustainPedalDown: boolean;
   private sustainedNotes: Set<number>;
 
+  private softPedalDown: boolean;
+
   private extemporeState: LSTMState;
   private extemporeLastOutput: number;
   private extemporeTime: Date;
@@ -96,6 +98,10 @@ class PianoGenie {
         }
       }
 
+      if (key === 18) {
+        this.softPedalDown = true;
+      }
+
       if (key === 32) {
         this.sustainPedalDown = true;
       }
@@ -116,6 +122,10 @@ class PianoGenie {
           this.sampler.keyUp(note);
         });
         this.sustainedNotes.clear();
+      }
+
+      if (key === 18) {
+        this.softPedalDown = false;
       }
     };
 
@@ -155,7 +165,7 @@ class PianoGenie {
         }
         this.sustainedNotes.add(note);
       }
-      this.sampler.keyDown(note);
+      this.sampler.keyDown(note, undefined, this.softPedalDown ? 0.2 : 0.8);
 
       // Draw immediately
       this.buttonToNoteMap.set(button, note);
@@ -218,7 +228,7 @@ class PianoGenie {
         }
         this.sustainedNotes.add(note);
       }
-      this.sampler.keyDown(note);
+      this.sampler.keyDown(note, undefined, this.softPedalDown ? 0.2 : 0.8);
 
       // Draw
       this.buttonToNoteMap.set(button, note);
