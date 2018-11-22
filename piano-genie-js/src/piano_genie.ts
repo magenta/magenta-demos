@@ -98,12 +98,12 @@ class PianoGenie {
         }
       }
 
-      if (key === 18) {
-        this.softPedalDown = true;
-      }
-
       if (key === 32) {
         this.sustainPedalDown = true;
+      }
+
+      if (key === 83) {
+        this.softPedalDown = true;
       }
     };
     document.onkeyup = (evt: KeyboardEvent) => {
@@ -127,7 +127,7 @@ class PianoGenie {
         this.sustainedNotes.clear();
       }
 
-      if (key === 18) {
+      if (key === 83) {
         this.softPedalDown = false;
       }
     };
