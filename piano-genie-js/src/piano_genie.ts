@@ -33,6 +33,11 @@ class PianoGenie {
 
   private buttonToNoteMap: Map<number, number>;
 
+  private sustainPedalDown: boolean;
+  private sustainedNotes: Set<number>;
+
+  private softPedalDown: boolean;
+
   private extemporeState: LSTMState;
   private extemporeLastOutput: number;
   private extemporeTime: Date;
@@ -69,6 +74,9 @@ class PianoGenie {
     this.buttonToNoteMap = new Map<number, number>();
     this.ui.genieCanvas.resize(this.cfg.modelCfg.getNumButtons());
 
+    this.sustainPedalDown = false;
+    this.sustainedNotes = new Set<number>();
+
     if (this.cfg.defaultUserParameters.lookAhead) {
       this.initLookAhead();
       this.lookAhead();
@@ -89,6 +97,14 @@ class PianoGenie {
           this.pressButton(button);
         }
       }
+
+      if (key === 32) {
+        this.sustainPedalDown = true;
+      }
+
+      if (key === 83) {
+        this.softPedalDown = true;
+      }
     };
     document.onkeyup = (evt: KeyboardEvent) => {
       const key = evt.keyCode;
@@ -98,6 +114,21 @@ class PianoGenie {
         if (this.buttonToNoteMap.has(button)) {
           this.releaseButton(button);
         }
+      }
+
+      if (key === 32) {
+        this.sustainPedalDown = false;
+        const heldButtonNotes = new Set<number>(this.buttonToNoteMap.values());
+        this.sustainedNotes.forEach((note: number) => {
+          if (!heldButtonNotes.has(note)) {
+            this.sampler.keyUp(note);
+          }
+        });
+        this.sustainedNotes.clear();
+      }
+
+      if (key === 83) {
+        this.softPedalDown = false;
       }
     };
 
@@ -131,7 +162,13 @@ class PianoGenie {
 
       // Play immediately
       const note = output + 21;
-      this.sampler.keyDown(note);
+      if (this.sustainPedalDown) {
+        if (this.sustainedNotes.has(note)) {
+          this.sampler.keyUp(note);
+        }
+        this.sustainedNotes.add(note);
+      }
+      this.sampler.keyDown(note, undefined, this.softPedalDown ? 0.2 : 0.8);
 
       // Draw immediately
       this.buttonToNoteMap.set(button, note);
@@ -188,7 +225,13 @@ class PianoGenie {
       // Play
       const output = predsArr[0];
       const note = output + 21;
-      this.sampler.keyDown(note);
+      if (this.sustainPedalDown) {
+        if (this.sustainedNotes.has(note)) {
+          this.sampler.keyUp(note);
+        }
+        this.sustainedNotes.add(note);
+      }
+      this.sampler.keyDown(note, undefined, this.softPedalDown ? 0.2 : 0.8);
 
       // Draw
       this.buttonToNoteMap.set(button, note);
@@ -209,7 +252,9 @@ class PianoGenie {
 
   private releaseButton(button: number) {
     const note = this.buttonToNoteMap.get(button);
-    this.sampler.keyUp(note);
+    if (!this.sustainPedalDown) {
+      this.sampler.keyUp(note);
+    }
     this.buttonToNoteMap.delete(button);
 
     this.ui.genieCanvas.redraw(this.buttonToNoteMap);
