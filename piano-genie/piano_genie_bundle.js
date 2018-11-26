@@ -11,7 +11,58 @@ function nextFrame() {
 exports.nextFrame = nextFrame;
 
 }).call(this,require("timers").setImmediate)
-},{"timers":150}],2:[function(require,module,exports){
+},{"timers":173}],2:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var contexts = {};
+var WEBGL_ATTRIBUTES = {
+    alpha: false,
+    antialias: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    depth: false,
+    stencil: false,
+    failIfMajorPerformanceCaveat: true
+};
+function getWebGLContext(webGLVersion) {
+    if (!(webGLVersion in contexts)) {
+        var canvas = document.createElement('canvas');
+        canvas.addEventListener('webglcontextlost', function (ev) {
+            ev.preventDefault();
+            delete contexts[webGLVersion];
+        }, false);
+        contexts[webGLVersion] = getWebGLRenderingContext(webGLVersion);
+    }
+    var gl = contexts[webGLVersion];
+    if (gl.isContextLost()) {
+        delete contexts[webGLVersion];
+        return getWebGLContext(webGLVersion);
+    }
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.STENCIL_TEST);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DITHER);
+    gl.disable(gl.POLYGON_OFFSET_FILL);
+    gl.disable(gl.SAMPLE_COVERAGE);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+    return contexts[webGLVersion];
+}
+exports.getWebGLContext = getWebGLContext;
+function getWebGLRenderingContext(webGLVersion) {
+    if (webGLVersion !== 1 && webGLVersion !== 2) {
+        throw new Error('Cannot get WebGL rendering context, WebGL is disabled.');
+    }
+    var canvas = document.createElement('canvas');
+    if (webGLVersion === 1) {
+        return (canvas.getContext('webgl', WEBGL_ATTRIBUTES) ||
+            canvas.getContext('experimental-webgl', WEBGL_ATTRIBUTES));
+    }
+    return canvas.getContext('webgl2', WEBGL_ATTRIBUTES);
+}
+
+},{}],3:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function isMobile() {
@@ -23,7 +74,7 @@ function isMobile() {
 }
 exports.isMobile = isMobile;
 
-},{}],3:[function(require,module,exports){
+},{}],4:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -73,18 +124,24 @@ var Engine = (function () {
         this.safeMode = safeMode;
         this.debugMode = debugMode;
         this.registeredVariables = {};
-        this.refCounter = new WeakMap();
         this.nextTapeNodeId = 0;
         this.numBytes = 0;
         this.numTensors = 0;
         this.numDataBuffers = 0;
+        this.profiling = false;
         this.gradientScopeCount = 0;
         this.customGradientDepth = 0;
         this.keepTensors = new Set();
+        this.tensorInfo = new WeakMap();
         this.activeScope = { track: [], name: 'default scope' };
         this.scopeStack = [this.activeScope];
         this.profiler = new profiler_1.Profiler(backend);
+        this.activeProfile =
+            { newBytes: 0, newTensors: 0, peakBytes: 0, kernels: [], result: null };
     }
+    Engine.prototype.moveData = function (dataId) {
+        this.write(dataId, this.readSync(dataId));
+    };
     Engine.prototype.tidy = function (nameOrFn, fn, gradMode) {
         var _this = this;
         if (gradMode === void 0) { gradMode = false; }
@@ -127,6 +184,12 @@ var Engine = (function () {
             throw ex;
         }
     };
+    Engine.prototype.nextTensorId = function () {
+        return Engine.nextTensorId++;
+    };
+    Engine.prototype.nextVariableId = function () {
+        return Engine.nextVariableId++;
+    };
     Engine.prototype.runKernel = function (forwardFunc, inputs, backwardsFunc) {
         var _this = this;
         var result;
@@ -136,6 +199,8 @@ var Engine = (function () {
             return x;
         };
         var scopeName = this.activeScope.name;
+        var startingBytecount = this.numBytes;
+        var startingNumTensors = this.numTensors;
         this.scopedRun(function () { return _this.customGradientDepth++; }, function () { return _this.customGradientDepth--; }, function () {
             if (!_this.debugMode()) {
                 result = forwardFunc(_this.backend, saveFunc);
@@ -157,10 +222,25 @@ var Engine = (function () {
             }
             this.activeTape.push(tapeNode);
         }
+        if (this.profiling) {
+            this.activeProfile.kernels.push({
+                name: scopeName,
+                bytesAdded: this.numBytes - startingBytecount,
+                totalBytesSnapshot: this.numBytes,
+                tensorsAdded: this.numTensors - startingNumTensors,
+                totalTensorsSnapshot: this.numTensors,
+                inputShapes: Object.keys(inputs).map(function (key) { return inputs[key].shape; }),
+                outputShape: Array.isArray(result) ?
+                    result.map(function (item) { return item.shape; }) :
+                    result.shape
+            });
+        }
         return result;
     };
     Engine.prototype.registerTensor = function (a) {
-        var refCount = this.refCounter.has(a.dataId) ? this.refCounter.get(a.dataId) : 0;
+        var refCount = this.tensorInfo.has(a.dataId) ?
+            this.tensorInfo.get(a.dataId).refCount :
+            0;
         this.numTensors++;
         if (refCount === 0) {
             this.numDataBuffers++;
@@ -168,9 +248,10 @@ var Engine = (function () {
                 this.numBytes +=
                     util.sizeFromShape(a.shape) * util.bytesPerElement(a.dtype);
             }
+            this.tensorInfo.set(a.dataId, { backend: this.backend, dtype: a.dtype, shape: a.shape, refCount: 0 });
             this.backend.register(a.dataId, a.shape, a.dtype);
         }
-        this.refCounter.set(a.dataId, refCount + 1);
+        this.tensorInfo.get(a.dataId).refCount++;
         if (!(a instanceof tensor_1.Variable)) {
             this.track(a);
         }
@@ -182,25 +263,26 @@ var Engine = (function () {
         this.registeredVariables[v.name] = v;
     };
     Engine.prototype.disposeTensor = function (a) {
-        if (!this.refCounter.has(a.dataId)) {
+        if (!this.tensorInfo.has(a.dataId)) {
             return;
         }
         if (this.keepTensors.has(a.id)) {
             this.keepTensors.delete(a.id);
         }
         this.numTensors--;
-        var refCount = this.refCounter.get(a.dataId);
+        var refCount = this.tensorInfo.get(a.dataId).refCount;
         if (refCount <= 1) {
-            this.refCounter.delete(a.dataId);
-            this.backend.disposeData(a.dataId);
+            var info = this.tensorInfo.get(a.dataId);
+            info.backend.disposeData(a.dataId);
             this.numDataBuffers--;
             if (a.dtype !== 'complex64') {
                 this.numBytes -=
                     util.sizeFromShape(a.shape) * util.bytesPerElement(a.dtype);
             }
+            this.tensorInfo.delete(a.dataId);
         }
         else {
-            this.refCounter.set(a.dataId, refCount - 1);
+            this.tensorInfo.get(a.dataId).refCount--;
         }
     };
     Engine.prototype.disposeVariables = function () {
@@ -216,6 +298,23 @@ var Engine = (function () {
         info.numDataBuffers = this.numDataBuffers;
         info.numBytes = this.numBytes;
         return info;
+    };
+    Engine.prototype.profile = function (query) {
+        return __awaiter(this, void 0, void 0, function () {
+            var startBytes, startNumTensors;
+            return __generator(this, function (_a) {
+                this.profiling = true;
+                startBytes = this.numBytes;
+                startNumTensors = this.numTensors;
+                this.activeProfile.kernels = [];
+                this.activeProfile.result = query();
+                this.profiling = false;
+                this.activeProfile.peakBytes = Math.max.apply(Math, this.activeProfile.kernels.map(function (d) { return d.totalBytesSnapshot; }));
+                this.activeProfile.newBytes = this.numBytes - startBytes;
+                this.activeProfile.newTensors = this.numTensors - startNumTensors;
+                return [2, this.activeProfile];
+            });
+        });
     };
     Engine.prototype.shouldRecord = function () {
         return this.activeTape != null && this.customGradientDepth === 0;
@@ -361,13 +460,21 @@ var Engine = (function () {
         };
     };
     Engine.prototype.write = function (dataId, values) {
+        var info = this.tensorInfo.get(dataId);
+        if (this.backend !== info.backend) {
+            info.backend.disposeData(dataId);
+            info.backend = this.backend;
+            this.backend.register(dataId, info.shape, info.dtype);
+        }
         this.backend.write(dataId, values);
     };
     Engine.prototype.readSync = function (dataId) {
-        return this.backend.readSync(dataId);
+        var info = this.tensorInfo.get(dataId);
+        return info.backend.readSync(dataId);
     };
     Engine.prototype.read = function (dataId) {
-        return this.backend.read(dataId);
+        var info = this.tensorInfo.get(dataId);
+        return info.backend.read(dataId);
     };
     Engine.prototype.fromPixels = function (pixels, numChannels) {
         return this.backend.fromPixels(pixels, numChannels);
@@ -396,6 +503,8 @@ var Engine = (function () {
         this.activeScope.track.push(result);
         return result;
     };
+    Engine.nextTensorId = 0;
+    Engine.nextVariableId = 0;
     return Engine;
 }());
 exports.Engine = Engine;
@@ -404,7 +513,7 @@ function ones(shape) {
     return tensor_1.Tensor.make(shape, { values: values });
 }
 
-},{"./profiler":124,"./tape":126,"./tensor":127,"./tensor_util":129,"./util":134}],4:[function(require,module,exports){
+},{"./profiler":147,"./tape":149,"./tensor":150,"./tensor_util":152,"./util":157}],5:[function(require,module,exports){
 (function (process){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -420,7 +529,6 @@ var TEST_EPSILON_FLOAT32 = 1e-3;
 var Environment = (function () {
     function Environment(features) {
         this.features = {};
-        this.engines = {};
         this.registry = {};
         if (features != null) {
             this.features = features;
@@ -436,10 +544,11 @@ var Environment = (function () {
         if (!(backendName in exports.ENV.registry)) {
             throw new Error("Backend name '" + backendName + "' not found in registry");
         }
-        exports.ENV.initBackend(backendName, safeMode);
+        exports.ENV.engine.backend = exports.ENV.findBackend(backendName);
+        exports.ENV.backendName = backendName;
     };
     Environment.getBackend = function () {
-        exports.ENV.initDefaultBackend();
+        exports.ENV.initEngine();
         return exports.ENV.backendName;
     };
     Environment.disposeVariables = function () {
@@ -447,6 +556,9 @@ var Environment = (function () {
     };
     Environment.memory = function () {
         return exports.ENV.engine.memory();
+    };
+    Environment.profile = function (f) {
+        return exports.ENV.engine.profile(f);
     };
     Environment.tidy = function (nameOrFn, fn, gradMode) {
         if (gradMode === void 0) { gradMode = false; }
@@ -503,6 +615,24 @@ var Environment = (function () {
         else if (feature === 'IS_CHROME') {
             return environment_util_1.isChrome();
         }
+        else if (feature === 'WEBGL_CPU_FORWARD') {
+            return true;
+        }
+        else if (feature === 'WEBGL_PACK_BATCHNORMALIZATION') {
+            return false;
+        }
+        else if (feature === 'WEBGL_LAZILY_UNPACK') {
+            return false;
+        }
+        else if (feature === 'WEBGL_CONV_IM2COL') {
+            return false;
+        }
+        else if (feature === 'WEBGL_PAGING_ENABLED') {
+            return this.get('IS_BROWSER') && !this.get('PROD');
+        }
+        else if (feature === 'WEBGL_MAX_TEXTURE_SIZE') {
+            return environment_util_1.getWebGLMaxTextureSize(this.get('WEBGL_VERSION'));
+        }
         else if (feature === 'IS_TEST') {
             return false;
         }
@@ -514,10 +644,7 @@ var Environment = (function () {
             if (webGLVersion === 0) {
                 return 0;
             }
-            if (webGLVersion > 0) {
-                return 0;
-            }
-            return environment_util_1.getWebGLDisjointQueryTimerVersion(webGLVersion, this.get('IS_BROWSER'));
+            return environment_util_1.getWebGLDisjointQueryTimerVersion(webGLVersion);
         }
         else if (feature === 'WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_RELIABLE') {
             return this.get('WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_VERSION') > 0 &&
@@ -527,22 +654,26 @@ var Environment = (function () {
             return this.get('WEBGL_VERSION') > 0;
         }
         else if (feature === 'WEBGL_VERSION') {
-            if (environment_util_1.isWebGLVersionEnabled(2, this.get('IS_BROWSER'))) {
+            if (environment_util_1.isWebGLVersionEnabled(2)) {
                 return 2;
             }
-            else if (environment_util_1.isWebGLVersionEnabled(1, this.get('IS_BROWSER'))) {
+            else if (environment_util_1.isWebGLVersionEnabled(1)) {
                 return 1;
             }
             return 0;
         }
         else if (feature === 'WEBGL_RENDER_FLOAT32_ENABLED') {
-            return environment_util_1.isRenderToFloatTextureEnabled(this.get('WEBGL_VERSION'), this.get('IS_BROWSER'));
+            return environment_util_1.isRenderToFloatTextureEnabled(this.get('WEBGL_VERSION'));
         }
         else if (feature === 'WEBGL_DOWNLOAD_FLOAT_ENABLED') {
-            return environment_util_1.isDownloadFloatTextureEnabled(this.get('WEBGL_VERSION'), this.get('IS_BROWSER'));
+            return environment_util_1.isDownloadFloatTextureEnabled(this.get('WEBGL_VERSION'));
         }
         else if (feature === 'WEBGL_FENCE_API_ENABLED') {
-            return environment_util_1.isWebGLFenceEnabled(this.get('WEBGL_VERSION'), this.get('IS_BROWSER'));
+            return environment_util_1.isWebGLFenceEnabled(this.get('WEBGL_VERSION'));
+        }
+        else if (feature === 'WEBGL_SIZE_UPLOAD_UNIFORM') {
+            var useUniforms = this.get('WEBGL_RENDER_FLOAT32_ENABLED');
+            return useUniforms ? 4 : 0;
         }
         else if (feature === 'TEST_EPSILON') {
             return this.backend.floatPrecision() === 32 ? TEST_EPSILON_FLOAT32 :
@@ -551,6 +682,12 @@ var Environment = (function () {
         else if (feature === 'EPSILON') {
             return this.backend.floatPrecision() === 32 ? EPSILON_FLOAT32 :
                 EPSILON_FLOAT16;
+        }
+        else if (feature === 'PROD') {
+            return false;
+        }
+        else if (feature === 'TENSORLIKE_CHECK_SHAPE_CONSISTENCY') {
+            return !this.get('PROD');
         }
         throw new Error("Unknown feature " + feature + ".");
     };
@@ -561,20 +698,6 @@ var Environment = (function () {
         this.features = environment_util_1.getFeaturesFromURL();
         if (this.globalEngine != null) {
             this.globalEngine = null;
-        }
-    };
-    Environment.prototype.initBackend = function (backendName, safeMode) {
-        var _this = this;
-        if (safeMode === void 0) { safeMode = false; }
-        this.backendName = backendName;
-        if (this.engines[backendName]) {
-            this.globalEngine = this.engines[backendName];
-        }
-        else {
-            var backend = this.findBackend(backendName);
-            this.globalEngine =
-                new engine_1.Engine(backend, safeMode, function () { return _this.get('DEBUG'); });
-            this.engines[backendName] = this.globalEngine;
         }
     };
     Object.defineProperty(Environment.prototype, "backend", {
@@ -602,6 +725,7 @@ var Environment = (function () {
         }
         try {
             var backend = factory();
+            backend.setDataMover({ moveData: function (dataId) { return _this.engine.moveData(dataId); } });
             this.registry[name] = { backend: backend, priority: priority };
             return true;
         }
@@ -617,21 +741,22 @@ var Environment = (function () {
         }
         this.registry[name].backend.dispose();
         delete this.registry[name];
-        if (name in this.engines) {
-            delete this.engines[name];
-        }
     };
     Object.defineProperty(Environment.prototype, "engine", {
         get: function () {
-            this.initDefaultBackend();
+            this.initEngine();
             return this.globalEngine;
         },
         enumerable: true,
         configurable: true
     });
-    Environment.prototype.initDefaultBackend = function () {
+    Environment.prototype.initEngine = function () {
+        var _this = this;
         if (this.globalEngine == null) {
-            this.initBackend(this.get('BACKEND'), false);
+            this.backendName = this.get('BACKEND');
+            var backend = this.findBackend(this.backendName);
+            this.globalEngine =
+                new engine_1.Engine(backend, false, function () { return _this.get('DEBUG'); });
         }
     };
     return Environment;
@@ -661,9 +786,10 @@ function getOrMakeEnvironment() {
 exports.ENV = getOrMakeEnvironment();
 
 }).call(this,require('_process'))
-},{"./device_util":2,"./engine":3,"./environment_util":5,"./tensor":127,"./tensor_util":129,"_process":141}],5:[function(require,module,exports){
+},{"./device_util":3,"./engine":4,"./environment_util":6,"./tensor":150,"./tensor_util":152,"_process":164}],6:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+var canvas_util_1 = require("./canvas_util");
 var Type;
 (function (Type) {
     Type[Type["NUMBER"] = 0] = "NUMBER";
@@ -671,36 +797,54 @@ var Type;
     Type[Type["STRING"] = 2] = "STRING";
 })(Type = exports.Type || (exports.Type = {}));
 exports.URL_PROPERTIES = [
-    { name: 'DEBUG', type: Type.BOOLEAN }, { name: 'IS_BROWSER', type: Type.BOOLEAN },
+    { name: 'DEBUG', type: Type.BOOLEAN },
+    { name: 'IS_BROWSER', type: Type.BOOLEAN },
+    { name: 'WEBGL_LAZILY_UNPACK', type: Type.BOOLEAN },
+    { name: 'WEBGL_CPU_FORWARD', type: Type.BOOLEAN },
+    { name: 'WEBGL_PACK_BATCHNORMALIZATION', type: Type.BOOLEAN },
+    { name: 'WEBGL_CONV_IM2COL', type: Type.BOOLEAN },
+    { name: 'WEBGL_MAX_TEXTURE_SIZE', type: Type.NUMBER },
+    { name: 'WEBGL_PAGING_ENABLED', type: Type.BOOLEAN },
     { name: 'WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_VERSION', type: Type.NUMBER },
     { name: 'WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_RELIABLE', type: Type.BOOLEAN },
     { name: 'WEBGL_VERSION', type: Type.NUMBER },
     { name: 'WEBGL_RENDER_FLOAT32_ENABLED', type: Type.BOOLEAN },
     { name: 'WEBGL_DOWNLOAD_FLOAT_ENABLED', type: Type.BOOLEAN },
     { name: 'WEBGL_FENCE_API_ENABLED', type: Type.BOOLEAN },
-    { name: 'BACKEND', type: Type.STRING }, { name: 'EPSILON', type: Type.NUMBER }
+    { name: 'WEBGL_SIZE_UPLOAD_UNIFORM', type: Type.NUMBER },
+    { name: 'BACKEND', type: Type.STRING },
+    { name: 'EPSILON', type: Type.NUMBER },
+    { name: 'PROD', type: Type.BOOLEAN },
+    { name: 'TENSORLIKE_CHECK_SHAPE_CONSISTENCY', type: Type.BOOLEAN },
 ];
-function isWebGLVersionEnabled(webGLVersion, isBrowser) {
-    var gl;
+function isWebGLVersionEnabled(webGLVersion) {
     try {
-        gl = getWebGLRenderingContext(webGLVersion, isBrowser);
+        var gl = canvas_util_1.getWebGLContext(webGLVersion);
+        if (gl != null) {
+            return true;
+        }
     }
     catch (e) {
         return false;
     }
-    if (gl != null) {
-        loseContext(gl);
-        return true;
-    }
     return false;
 }
 exports.isWebGLVersionEnabled = isWebGLVersionEnabled;
-function getWebGLDisjointQueryTimerVersion(webGLVersion, isBrowser) {
+var MAX_TEXTURE_SIZE;
+function getWebGLMaxTextureSize(webGLVersion) {
+    if (MAX_TEXTURE_SIZE == null) {
+        var gl = canvas_util_1.getWebGLContext(webGLVersion);
+        MAX_TEXTURE_SIZE = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    }
+    return MAX_TEXTURE_SIZE;
+}
+exports.getWebGLMaxTextureSize = getWebGLMaxTextureSize;
+function getWebGLDisjointQueryTimerVersion(webGLVersion) {
     if (webGLVersion === 0) {
         return 0;
     }
     var queryTimerVersion;
-    var gl = getWebGLRenderingContext(webGLVersion, isBrowser);
+    var gl = canvas_util_1.getWebGLContext(webGLVersion);
     if (hasExtension(gl, 'EXT_disjoint_timer_query_webgl2') &&
         webGLVersion === 2) {
         queryTimerVersion = 2;
@@ -711,17 +855,14 @@ function getWebGLDisjointQueryTimerVersion(webGLVersion, isBrowser) {
     else {
         queryTimerVersion = 0;
     }
-    if (gl != null) {
-        loseContext(gl);
-    }
     return queryTimerVersion;
 }
 exports.getWebGLDisjointQueryTimerVersion = getWebGLDisjointQueryTimerVersion;
-function isRenderToFloatTextureEnabled(webGLVersion, isBrowser) {
+function isRenderToFloatTextureEnabled(webGLVersion) {
     if (webGLVersion === 0) {
         return false;
     }
-    var gl = getWebGLRenderingContext(webGLVersion, isBrowser);
+    var gl = canvas_util_1.getWebGLContext(webGLVersion);
     if (webGLVersion === 1) {
         if (!hasExtension(gl, 'OES_texture_float')) {
             return false;
@@ -733,15 +874,14 @@ function isRenderToFloatTextureEnabled(webGLVersion, isBrowser) {
         }
     }
     var isFrameBufferComplete = createFloatTextureAndBindToFramebuffer(gl, webGLVersion);
-    loseContext(gl);
     return isFrameBufferComplete;
 }
 exports.isRenderToFloatTextureEnabled = isRenderToFloatTextureEnabled;
-function isDownloadFloatTextureEnabled(webGLVersion, isBrowser) {
+function isDownloadFloatTextureEnabled(webGLVersion) {
     if (webGLVersion === 0) {
         return false;
     }
-    var gl = getWebGLRenderingContext(webGLVersion, isBrowser);
+    var gl = canvas_util_1.getWebGLContext(webGLVersion);
     if (webGLVersion === 1) {
         if (!hasExtension(gl, 'OES_texture_float')) {
             return false;
@@ -756,17 +896,15 @@ function isDownloadFloatTextureEnabled(webGLVersion, isBrowser) {
         }
     }
     var isFrameBufferComplete = createFloatTextureAndBindToFramebuffer(gl, webGLVersion);
-    loseContext(gl);
     return isFrameBufferComplete;
 }
 exports.isDownloadFloatTextureEnabled = isDownloadFloatTextureEnabled;
-function isWebGLFenceEnabled(webGLVersion, isBrowser) {
+function isWebGLFenceEnabled(webGLVersion) {
     if (webGLVersion !== 2) {
         return false;
     }
-    var gl = getWebGLRenderingContext(webGLVersion, isBrowser);
+    var gl = canvas_util_1.getWebGLContext(webGLVersion);
     var isEnabled = gl.fenceSync != null;
-    loseContext(gl);
     return isEnabled;
 }
 exports.isWebGLFenceEnabled = isWebGLFenceEnabled;
@@ -779,7 +917,8 @@ exports.isChrome = isChrome;
 var TENSORFLOWJS_FLAGS_PREFIX = 'tfjsflags';
 function getFeaturesFromURL() {
     var features = {};
-    if (typeof window === 'undefined' || typeof window.location === 'undefined') {
+    if (typeof window === 'undefined' || typeof window.location === 'undefined' ||
+        typeof window.location.search === 'undefined') {
         return features;
     }
     var urlParams = getQueryParams(window.location.search);
@@ -816,26 +955,6 @@ function hasExtension(gl, extensionName) {
     var ext = gl.getExtension(extensionName);
     return ext != null;
 }
-function getWebGLRenderingContext(webGLVersion, isBrowser) {
-    if (webGLVersion === 0 || !isBrowser) {
-        throw new Error('Cannot get WebGL rendering context, WebGL is disabled.');
-    }
-    var tempCanvas = document.createElement('canvas');
-    if (webGLVersion === 1) {
-        return (tempCanvas.getContext('webgl') ||
-            tempCanvas.getContext('experimental-webgl'));
-    }
-    return tempCanvas.getContext('webgl2');
-}
-function loseContext(gl) {
-    if (gl != null) {
-        var loseContextExtension = gl.getExtension('WEBGL_lose_context');
-        if (loseContextExtension == null) {
-            throw new Error('Extension WEBGL_lose_context not supported on this browser.');
-        }
-        loseContextExtension.loseContext();
-    }
-}
 function createFloatTextureAndBindToFramebuffer(gl, webGLVersion) {
     var frameBuffer = gl.createFramebuffer();
     var texture = gl.createTexture();
@@ -868,7 +987,7 @@ function decodeParam(params, name, value) {
     params[decodeURIComponent(name)] = decodeURIComponent(value || '');
 }
 
-},{}],6:[function(require,module,exports){
+},{"./canvas_util":2}],7:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
@@ -883,8 +1002,9 @@ exports.tidy = environment_1.Environment.tidy;
 exports.keep = environment_1.Environment.keep;
 exports.dispose = environment_1.Environment.dispose;
 exports.time = environment_1.Environment.time;
+exports.profile = environment_1.Environment.profile;
 
-},{"./environment":4,"./gradients":7}],7:[function(require,module,exports){
+},{"./environment":5,"./gradients":8}],8:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
@@ -997,7 +1117,7 @@ function checkGrads(grads) {
     }
 }
 
-},{"./environment":4,"./tensor":127,"./util":134}],8:[function(require,module,exports){
+},{"./environment":5,"./tensor":150,"./util":157}],9:[function(require,module,exports){
 "use strict";
 function __export(m) {
     for (var p in m) if (!exports.hasOwnProperty(p)) exports[p] = m[p];
@@ -1012,6 +1132,8 @@ exports.environment = environment;
 var environment_1 = require("./environment");
 var io = require("./io/io");
 exports.io = io;
+var math = require("./math");
+exports.math = math;
 var serialization = require("./serialization");
 exports.serialization = serialization;
 var tensor_1 = require("./tensor");
@@ -1058,10 +1180,13 @@ exports.setBackend = environment_1.Environment.setBackend;
 exports.getBackend = environment_1.Environment.getBackend;
 exports.disposeVariables = environment_1.Environment.disposeVariables;
 exports.memory = environment_1.Environment.memory;
+var backend_1 = require("./kernels/backend");
+exports.KernelBackend = backend_1.KernelBackend;
+exports.DataStorage = backend_1.DataStorage;
 var ops = require("./ops/ops");
 tensor_1.setOpHandler(ops);
 
-},{"./browser_util":1,"./environment":4,"./globals":6,"./io/io":12,"./kernels/backend_cpu":20,"./kernels/backend_webgl":22,"./ops/loss_ops":90,"./ops/ops":97,"./optimizers/adadelta_optimizer":115,"./optimizers/adagrad_optimizer":116,"./optimizers/adam_optimizer":117,"./optimizers/adamax_optimizer":118,"./optimizers/momentum_optimizer":119,"./optimizers/optimizer":120,"./optimizers/rmsprop_optimizer":122,"./optimizers/sgd_optimizer":123,"./serialization":125,"./tensor":127,"./test_util":131,"./train":132,"./types":133,"./util":134,"./version":135,"./webgl":136}],9:[function(require,module,exports){
+},{"./browser_util":1,"./environment":5,"./globals":7,"./io/io":13,"./kernels/backend":21,"./kernels/backend_cpu":22,"./kernels/backend_webgl":24,"./math":88,"./ops/loss_ops":108,"./ops/ops":115,"./optimizers/adadelta_optimizer":138,"./optimizers/adagrad_optimizer":139,"./optimizers/adam_optimizer":140,"./optimizers/adamax_optimizer":141,"./optimizers/momentum_optimizer":142,"./optimizers/optimizer":143,"./optimizers/rmsprop_optimizer":145,"./optimizers/sgd_optimizer":146,"./serialization":148,"./tensor":150,"./test_util":154,"./train":155,"./types":156,"./util":157,"./version":158,"./webgl":159}],10:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -1302,7 +1427,7 @@ function browserFiles(files) {
 }
 exports.browserFiles = browserFiles;
 
-},{"../environment":4,"./io_utils":13,"./router_registry":17}],10:[function(require,module,exports){
+},{"../environment":5,"./io_utils":14,"./router_registry":18}],11:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -1345,7 +1470,8 @@ var io_utils_1 = require("./io_utils");
 var router_registry_1 = require("./router_registry");
 var weights_loader_1 = require("./weights_loader");
 var BrowserHTTPRequest = (function () {
-    function BrowserHTTPRequest(path, requestInit) {
+    function BrowserHTTPRequest(path, requestInit, weightPathPrefix) {
+        this.weightPathPrefix = weightPathPrefix;
         this.DEFAULT_METHOD = 'POST';
         if (typeof fetch === 'undefined') {
             throw new Error('browserHTTPRequest is not supported outside the web browser without a fetch polyfill.');
@@ -1389,7 +1515,7 @@ var BrowserHTTPRequest = (function () {
                         return [4, fetch(this.path, init)];
                     case 1:
                         response = _a.sent();
-                        if (response.status === 200) {
+                        if (response.ok) {
                             return [2, {
                                     modelArtifactsInfo: io_utils_1.getModelArtifactsInfoForJSON(modelArtifacts),
                                     responses: [response],
@@ -1422,6 +1548,9 @@ var BrowserHTTPRequest = (function () {
                         return [4, fetch(this.path[0], this.requestInit)];
                     case 1:
                         response = _a.sent();
+                        if (!response.ok) {
+                            throw new Error("BrowserHTTPRequest.load() failed due to HTTP response: " + response.statusText);
+                        }
                         return [4, response.arrayBuffer()];
                     case 2: return [2, _a.sent()];
                     case 3:
@@ -1442,6 +1571,9 @@ var BrowserHTTPRequest = (function () {
                         return [4, fetch(this.path[1], this.requestInit)];
                     case 1:
                         manifestPromise = _a.sent();
+                        if (!manifestPromise.ok) {
+                            throw new Error("BrowserHTTPRequest.load() failed due to HTTP response: " + manifestPromise.statusText);
+                        }
                         return [4, Promise.all([graphPromise, manifestPromise])];
                     case 2:
                         results = _a.sent();
@@ -1468,6 +1600,9 @@ var BrowserHTTPRequest = (function () {
                     case 0: return [4, fetch(this.path, this.requestInit)];
                     case 1:
                         modelConfigRequest = _a.sent();
+                        if (!modelConfigRequest.ok) {
+                            throw new Error("BrowserHTTPRequest.load() failed due to HTTP response: " + modelConfigRequest.statusText);
+                        }
                         return [4, modelConfigRequest.json()];
                     case 2:
                         modelConfig = _a.sent();
@@ -1491,31 +1626,29 @@ var BrowserHTTPRequest = (function () {
     };
     BrowserHTTPRequest.prototype.loadWeights = function (weightsManifest) {
         return __awaiter(this, void 0, void 0, function () {
-            var weightPath, weightSpecs, _i, weightsManifest_2, entry, pathPrefix, fetchURLs, _a, _b;
-            return __generator(this, function (_c) {
-                switch (_c.label) {
+            var weightPath, _a, prefix, suffix, pathPrefix, weightSpecs, _i, weightsManifest_2, entry, fetchURLs, _b, _c;
+            return __generator(this, function (_d) {
+                switch (_d.label) {
                     case 0:
                         weightPath = Array.isArray(this.path) ? this.path[1] : this.path;
+                        _a = parseUrl(weightPath), prefix = _a[0], suffix = _a[1];
+                        pathPrefix = this.weightPathPrefix || prefix;
                         weightSpecs = [];
                         for (_i = 0, weightsManifest_2 = weightsManifest; _i < weightsManifest_2.length; _i++) {
                             entry = weightsManifest_2[_i];
                             weightSpecs.push.apply(weightSpecs, entry.weights);
                         }
-                        pathPrefix = weightPath.substring(0, weightPath.lastIndexOf('/'));
-                        if (!pathPrefix.endsWith('/')) {
-                            pathPrefix = pathPrefix + '/';
-                        }
                         fetchURLs = [];
                         weightsManifest.forEach(function (weightsGroup) {
                             weightsGroup.paths.forEach(function (path) {
-                                fetchURLs.push(pathPrefix + path);
+                                fetchURLs.push(pathPrefix + path + suffix);
                             });
                         });
-                        _a = [weightSpecs];
-                        _b = io_utils_1.concatenateArrayBuffers;
+                        _b = [weightSpecs];
+                        _c = io_utils_1.concatenateArrayBuffers;
                         return [4, weights_loader_1.loadWeightsAsArrayBuffer(fetchURLs, this.requestInit)];
-                    case 1: return [2, _a.concat([
-                            _b.apply(void 0, [_c.sent()])
+                    case 1: return [2, _b.concat([
+                            _c.apply(void 0, [_d.sent()])
                         ])];
                 }
             });
@@ -1525,6 +1658,14 @@ var BrowserHTTPRequest = (function () {
     return BrowserHTTPRequest;
 }());
 exports.BrowserHTTPRequest = BrowserHTTPRequest;
+function parseUrl(url) {
+    var lastSlash = url.lastIndexOf('/');
+    var lastSearchParam = url.lastIndexOf('?');
+    var prefix = url.substring(0, lastSlash);
+    var suffix = lastSearchParam > lastSlash ? url.substring(lastSearchParam) : '';
+    return [prefix + '/', suffix];
+}
+exports.parseUrl = parseUrl;
 function isHTTPScheme(url) {
     return url.match(BrowserHTTPRequest.URL_SCHEME_REGEX) != null;
 }
@@ -1548,12 +1689,12 @@ exports.httpRequestRouter = function (url) {
 };
 router_registry_1.IORouterRegistry.registerSaveRouter(exports.httpRequestRouter);
 router_registry_1.IORouterRegistry.registerLoadRouter(exports.httpRequestRouter);
-function browserHTTPRequest(path, requestInit) {
-    return new BrowserHTTPRequest(path, requestInit);
+function browserHTTPRequest(path, requestInit, weightPathPrefix) {
+    return new BrowserHTTPRequest(path, requestInit, weightPathPrefix);
 }
 exports.browserHTTPRequest = browserHTTPRequest;
 
-},{"../util":134,"./io_utils":13,"./router_registry":17,"./weights_loader":19}],11:[function(require,module,exports){
+},{"../util":157,"./io_utils":14,"./router_registry":18,"./weights_loader":20}],12:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -1863,7 +2004,7 @@ if (environment_1.ENV.get('IS_BROWSER')) {
     }
 }
 
-},{"../environment":4,"./io_utils":13,"./model_management":15,"./router_registry":17}],12:[function(require,module,exports){
+},{"../environment":5,"./io_utils":14,"./model_management":16,"./router_registry":18}],13:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 require("./indexed_db");
@@ -1897,7 +2038,7 @@ exports.listModels = model_management_1.listModels;
 exports.moveModel = model_management_1.moveModel;
 exports.removeModel = model_management_1.removeModel;
 
-},{"./browser_files":9,"./browser_http":10,"./indexed_db":11,"./io_utils":13,"./local_storage":14,"./model_management":15,"./passthrough":16,"./router_registry":17,"./weights_loader":19}],13:[function(require,module,exports){
+},{"./browser_files":10,"./browser_http":11,"./indexed_db":12,"./io_utils":14,"./local_storage":15,"./model_management":16,"./passthrough":17,"./router_registry":18,"./weights_loader":20}],14:[function(require,module,exports){
 (function (Buffer){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
@@ -2134,7 +2275,7 @@ function getModelArtifactsInfoForJSON(modelArtifacts) {
 exports.getModelArtifactsInfoForJSON = getModelArtifactsInfoForJSON;
 
 }).call(this,require("buffer").Buffer)
-},{"../ops/tensor_ops":111,"../util":134,"./types":18,"buffer":139}],14:[function(require,module,exports){
+},{"../ops/tensor_ops":134,"../util":157,"./types":19,"buffer":162}],15:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -2382,7 +2523,7 @@ if (environment_1.ENV.get('IS_BROWSER')) {
     }
 }
 
-},{"../environment":4,"../util":134,"./io_utils":13,"./model_management":15,"./router_registry":17}],15:[function(require,module,exports){
+},{"../environment":5,"../util":157,"./io_utils":14,"./model_management":16,"./router_registry":18}],16:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -2586,7 +2727,7 @@ function moveModel(sourceURL, destURL) {
 }
 exports.moveModel = moveModel;
 
-},{"../util":134,"./router_registry":17}],16:[function(require,module,exports){
+},{"../util":157,"./router_registry":18}],17:[function(require,module,exports){
 "use strict";
 var __assign = (this && this.__assign) || Object.assign || function(t) {
     for (var s, i = 1, n = arguments.length; i < n; i++) {
@@ -2680,7 +2821,7 @@ function withSaveHandler(saveHandler) {
 }
 exports.withSaveHandler = withSaveHandler;
 
-},{}],17:[function(require,module,exports){
+},{}],18:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var IORouterRegistry = (function () {
@@ -2722,7 +2863,7 @@ var IORouterRegistry = (function () {
 }());
 exports.IORouterRegistry = IORouterRegistry;
 
-},{}],18:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DTYPE_VALUE_SIZE_MAP = {
@@ -2733,7 +2874,7 @@ exports.DTYPE_VALUE_SIZE_MAP = {
     'bool': 1,
 };
 
-},{}],19:[function(require,module,exports){
+},{}],20:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -2895,7 +3036,418 @@ function loadWeights(manifest, filePathPrefix, weightNames, requestOptions) {
 }
 exports.loadWeights = loadWeights;
 
-},{"../util":134,"./io_utils":13,"./types":18}],20:[function(require,module,exports){
+},{"../util":157,"./io_utils":14,"./types":19}],21:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var DataStorage = (function () {
+    function DataStorage(dataMover) {
+        this.dataMover = dataMover;
+        this.data = new WeakMap();
+    }
+    DataStorage.prototype.get = function (dataId) {
+        if (!this.data.has(dataId)) {
+            this.dataMover.moveData(dataId);
+        }
+        return this.data.get(dataId);
+    };
+    DataStorage.prototype.set = function (dataId, value) {
+        this.data.set(dataId, value);
+    };
+    DataStorage.prototype.has = function (dataId) {
+        return this.data.has(dataId);
+    };
+    DataStorage.prototype.delete = function (dataId) {
+        return this.data.delete(dataId);
+    };
+    return DataStorage;
+}());
+exports.DataStorage = DataStorage;
+var KernelBackend = (function () {
+    function KernelBackend() {
+    }
+    KernelBackend.prototype.time = function (f) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.read = function (dataId) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.readSync = function (dataId) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.disposeData = function (dataId) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.write = function (dataId, values) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.fromPixels = function (pixels, numChannels) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.register = function (dataId, shape, dtype) {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.memory = function () {
+        throw new Error('Not yet implemented.');
+    };
+    KernelBackend.prototype.floatPrecision = function () {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.batchMatMul = function (a, b, transposeA, transposeB) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.slice = function (x, begin, size) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.stridedSlice = function (x, begin, end, strides, beginMask, endMask, ellipsisMask, newAxisMask, shrinkAxisMask) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.reverse = function (a, axis) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.concat = function (tensors, axis) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.neg = function (a) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.add = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.addN = function (tensors) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.subtract = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.multiply = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.realDivide = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.floorDiv = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sum = function (x, axes) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.prod = function (x, axes) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.unsortedSegmentSum = function (x, segmentIds, numSegments) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.argMin = function (x, axis) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.argMax = function (x, axis) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.equal = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.notEqual = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.less = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.lessEqual = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.greater = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.greaterEqual = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.logicalNot = function (a) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.logicalAnd = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.logicalOr = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.where = function (condition) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.select = function (condition, a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.topk = function (x, k, sorted) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.min = function (x, axes) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.minimum = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.mod = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.max = function (x, axes) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.maximum = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.all = function (x, axes) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.any = function (x, axes) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.squaredDifference = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.ceil = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.floor = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.round = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sign = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.pow = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.exp = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.expm1 = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.log = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.log1p = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sqrt = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.rsqrt = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.square = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.reciprocal = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.relu = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.elu = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.eluDer = function (dy, y) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.selu = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.int = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.clip = function (x, min, max) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.abs = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.complexAbs = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sigmoid = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.softplus = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sin = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.cos = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.tan = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.asin = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.acos = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.atan = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.atan2 = function (a, b) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sinh = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.cosh = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.tanh = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.asinh = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.acosh = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.atanh = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.erf = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.step = function (x, alpha) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.conv2d = function (x, filter, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.conv2dDerInput = function (dy, filter, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.conv2dDerFilter = function (x, dY, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.depthwiseConv2D = function (input, filter, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.depthwiseConv2DDerInput = function (dy, filter, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.depthwiseConv2DDerFilter = function (x, dY, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.maxPool = function (x, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.maxPoolBackprop = function (dy, x, y, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.avgPool = function (x, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.avgPoolBackprop = function (dy, x, convInfo) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.reshape = function (x, shape) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.cast = function (x, dtype) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.tile = function (x, reps) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.pad = function (x, paddings, constantValue) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.transpose = function (x, perm) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.gather = function (x, indices, axis) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.gatherND = function (x, indices) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.scatterND = function (indices, updates, shape) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.batchToSpaceND = function (x, blockShape, crops) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.spaceToBatchND = function (x, blockShape, paddings) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.resizeBilinear = function (x, newHeight, newWidth, alignCorners) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.resizeBilinearBackprop = function (dy, x, alignCorners) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.resizeNearestNeighbor = function (x, newHEight, newWidth, alignCorners) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.resizeNearestNeighborBackprop = function (dy, x, alignCorners) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.batchNormalization = function (x, mean, variance, varianceEpsilon, scale, offset) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.localResponseNormalization4D = function (x, radius, bias, alpha, beta) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.LRNGrad = function (dy, inputImage, outputImage, radius, bias, alpha, beta) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.multinomial = function (logits, normalized, numSamples, seed) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.oneHot = function (indices, depth, onValue, offValue) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.cumsum = function (x, axis, exclusive, reverse) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.nonMaxSuppression = function (boxes, scores, maxOutputSize, iouThreshold, scoreThreshold) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.fft = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.ifft = function (x) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.complex = function (real, imag) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.real = function (input) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.imag = function (input) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.cropAndResize = function (image, boxes, boxIndex, cropSize, method, extrapolationValue) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.depthToSpace = function (x, blockSize, dataFormat) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.split = function (value, sizeSplits, axis) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.sparseToDense = function (sparseIndices, sparseValues, outputShape, defaultValue) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.setDataMover = function (dataMover) {
+        throw new Error('Not yet implemented');
+    };
+    KernelBackend.prototype.dispose = function () {
+        throw new Error('Not yet implemented');
+    };
+    return KernelBackend;
+}());
+exports.KernelBackend = KernelBackend;
+
+},{}],22:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -2941,14 +3493,17 @@ var axis_util = require("../ops/axis_util");
 var broadcast_util = require("../ops/broadcast_util");
 var concat_util = require("../ops/concat_util");
 var erf_util = require("../ops/erf_util");
+var gather_nd_util = require("../ops/gather_nd_util");
 var ops = require("../ops/ops");
 var ops_1 = require("../ops/ops");
+var scatter_nd_util = require("../ops/scatter_nd_util");
 var selu_util = require("../ops/selu_util");
 var slice_util_1 = require("../ops/slice_util");
 var tensor_1 = require("../tensor");
 var types_1 = require("../types");
 var util = require("../util");
 var util_1 = require("../util");
+var backend_1 = require("./backend");
 var backend_util = require("./backend_util");
 var complex_util = require("./complex_util");
 var non_max_suppression_impl_1 = require("./non_max_suppression_impl");
@@ -2958,12 +3513,15 @@ var where_impl_1 = require("./where_impl");
 var MathBackendCPU = (function () {
     function MathBackendCPU() {
         this.blockSize = 48;
-        this.data = new WeakMap();
         this.firstUse = true;
         if (environment_1.ENV.get('IS_BROWSER')) {
-            this.canvas = document.createElement('canvas');
+            this.fromPixels2DContext =
+                document.createElement('canvas').getContext('2d');
         }
     }
+    MathBackendCPU.prototype.setDataMover = function (dataMover) {
+        this.data = new backend_1.DataStorage(dataMover);
+    };
     MathBackendCPU.prototype.register = function (dataId, shape, dtype) {
         if (this.firstUse) {
             this.firstUse = false;
@@ -2989,7 +3547,6 @@ var MathBackendCPU = (function () {
         if (values == null) {
             throw new Error('MathBackendCPU.write(): values can not be null');
         }
-        this.throwIfNoData(dataId);
         this.data.get(dataId).values = values;
     };
     MathBackendCPU.prototype.fromPixels = function (pixels, numChannels) {
@@ -3012,14 +3569,14 @@ var MathBackendCPU = (function () {
         }
         else if (pixels instanceof HTMLImageElement ||
             pixels instanceof HTMLVideoElement) {
-            if (this.canvas == null) {
+            if (this.fromPixels2DContext == null) {
                 throw new Error('Can\'t read pixels from HTMLImageElement outside ' +
                     'the browser.');
             }
-            this.canvas.width = pixels.width;
-            this.canvas.height = pixels.height;
-            this.canvas.getContext('2d').drawImage(pixels, 0, 0, pixels.width, pixels.height);
-            vals = this.canvas.getContext('2d')
+            this.fromPixels2DContext.canvas.width = pixels.width;
+            this.fromPixels2DContext.canvas.height = pixels.height;
+            this.fromPixels2DContext.drawImage(pixels, 0, 0, pixels.width, pixels.height);
+            vals = this.fromPixels2DContext
                 .getImageData(0, 0, pixels.width, pixels.height)
                 .data;
         }
@@ -3052,7 +3609,6 @@ var MathBackendCPU = (function () {
         });
     };
     MathBackendCPU.prototype.readSync = function (dataId) {
-        this.throwIfNoData(dataId);
         var _a = this.data.get(dataId), dtype = _a.dtype, complexTensors = _a.complexTensors;
         if (dtype === 'complex64') {
             var realValues = complexTensors.real.dataSync();
@@ -3086,13 +3642,6 @@ var MathBackendCPU = (function () {
         return {
             unreliable: true
         };
-    };
-    MathBackendCPU.prototype.throwIfNoData = function (dataId) {
-        if (!this.data.has(dataId)) {
-            throw new Error("CPU backend: No data found for this tensor. " +
-                "Did you change your backend in the middle of the program? " +
-                "New backends can't use Tensors created with previous backends");
-        }
     };
     MathBackendCPU.prototype.complex = function (real, imag) {
         var result = tensor_1.Tensor.make(real.shape, {}, 'complex64');
@@ -3313,6 +3862,24 @@ var MathBackendCPU = (function () {
                 sum += aVals[offset + j];
             }
             vals[i] = sum;
+        }
+        return result;
+    };
+    MathBackendCPU.prototype.prod = function (x, axes) {
+        this.assertNotComplex(x, 'sum');
+        var _a = axis_util.computeOutAndReduceShapes(x.shape, axes), outShape = _a[0], reduceShape = _a[1];
+        var resultDtype = types_1.upcastType(x.dtype, 'int32');
+        var result = ops.zeros(outShape, resultDtype);
+        var reduceSize = util.sizeFromShape(reduceShape);
+        var vals = result.dataSync();
+        var aVals = x.dataSync();
+        for (var i = 0; i < vals.length; ++i) {
+            var offset = i * reduceSize;
+            var prod = 1;
+            for (var j = 0; j < reduceSize; ++j) {
+                prod *= aVals[offset + j];
+            }
+            vals[i] = prod;
         }
         return result;
     };
@@ -3809,11 +4376,20 @@ var MathBackendCPU = (function () {
         return tensor_1.Tensor.make(x.shape, { values: resultValues });
     };
     MathBackendCPU.prototype.abs = function (x) {
-        this.assertNotComplex(x, 'abs');
         var resultValues = new Float32Array(x.size);
         var values = x.dataSync();
         for (var i = 0; i < values.length; ++i) {
             resultValues[i] = Math.abs(values[i]);
+        }
+        return tensor_1.Tensor.make(x.shape, { values: resultValues });
+    };
+    MathBackendCPU.prototype.complexAbs = function (x) {
+        var resultValues = new Float32Array(x.size);
+        var values = x.dataSync();
+        for (var i = 0; i < x.size; ++i) {
+            var real = values[i * 2];
+            var imag = values[i * 2 + 1];
+            resultValues[i] = Math.sqrt(real * real + imag * imag);
         }
         return tensor_1.Tensor.make(x.shape, { values: resultValues });
     };
@@ -4372,29 +4948,41 @@ var MathBackendCPU = (function () {
         this.assertNotComplex(x, 'pool');
         var strideHeight = convInfo.strideHeight;
         var strideWidth = convInfo.strideWidth;
-        var filterHeight = convInfo.filterHeight;
-        var filterWidth = convInfo.filterWidth;
-        var y = ops.buffer(convInfo.outShape, 'float32');
+        var dilationHeight = convInfo.dilationHeight;
+        var dilationWidth = convInfo.dilationWidth;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
         var padTop = convInfo.padInfo.top;
         var padLeft = convInfo.padInfo.left;
         var initialValue = (poolType === 'max' ? Number.NEGATIVE_INFINITY :
             Number.POSITIVE_INFINITY);
+        var xValues = x.dataSync();
+        var output = ops.buffer(convInfo.outShape, x.dtype);
+        var outputVals = output.values;
+        var outputBatchStrides = convInfo.outShape[1] * convInfo.outShape[2] * convInfo.outShape[3];
+        var outputRowStrides = convInfo.outShape[2] * convInfo.outShape[3];
+        var outputColStrides = convInfo.outShape[3];
         for (var b = 0; b < convInfo.batchSize; ++b) {
+            var outputBatchOffset = b * outputBatchStrides;
+            var inputBatchOffset = b * x.strides[0];
             for (var d = 0; d < convInfo.inChannels; ++d) {
                 for (var yR = 0; yR < convInfo.outHeight; ++yR) {
                     var xRCorner = yR * strideHeight - padTop;
                     var xRMin = Math.max(0, xRCorner);
-                    var xRMax = Math.min(convInfo.inHeight, filterHeight + xRCorner);
+                    var xRMax = Math.min(convInfo.inHeight, effectiveFilterHeight + xRCorner);
+                    var outputRowOffset = outputBatchOffset + yR * outputRowStrides;
                     for (var yC = 0; yC < convInfo.outWidth; ++yC) {
                         var xCCorner = yC * strideWidth - padLeft;
                         var xCMin = Math.max(0, xCCorner);
-                        var xCMax = Math.min(convInfo.inWidth, filterWidth + xCCorner);
+                        var xCMax = Math.min(convInfo.inWidth, effectiveFilterWidth + xCCorner);
                         var minMaxValue = initialValue;
                         var avgValue = 0;
                         var count = 0;
-                        for (var xR = xRMin; xR < xRMax; ++xR) {
-                            for (var xC = xCMin; xC < xCMax; ++xC) {
-                                var pixel = x.get(b, xR, xC, d);
+                        for (var xR = xRMin; xR < xRMax; xR += dilationHeight) {
+                            var xROffset = inputBatchOffset + xR * x.strides[1];
+                            for (var xC = xCMin; xC < xCMax; xC += dilationWidth) {
+                                var xCOffset = xROffset + xC * x.strides[2];
+                                var pixel = xValues[xCOffset + d];
                                 if ((poolType === 'max' && pixel > minMaxValue)) {
                                     minMaxValue = pixel;
                                 }
@@ -4407,12 +4995,14 @@ var MathBackendCPU = (function () {
                                 break;
                             }
                         }
-                        y.set(poolType === 'avg' ? avgValue / count : minMaxValue, b, yR, yC, d);
+                        var outputOffset = outputRowOffset + yC * outputColStrides + d;
+                        outputVals[outputOffset] =
+                            poolType === 'avg' ? avgValue / count : minMaxValue;
                     }
                 }
             }
         }
-        return y.toTensor();
+        return output.toTensor();
     };
     MathBackendCPU.prototype.maxPool = function (x, convInfo) {
         return this.pool(x, convInfo, 'max');
@@ -4421,30 +5011,38 @@ var MathBackendCPU = (function () {
         var maxPositions = ops.buffer(convInfo.outShape, 'int32');
         var strideHeight = convInfo.strideHeight;
         var strideWidth = convInfo.strideWidth;
-        var filterHeight = convInfo.filterHeight;
-        var filterWidth = convInfo.filterWidth;
+        var dilationHeight = convInfo.dilationHeight;
+        var dilationWidth = convInfo.dilationWidth;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
         var padTop = convInfo.padInfo.top;
         var padLeft = convInfo.padInfo.left;
         for (var b = 0; b < convInfo.batchSize; ++b) {
             for (var d = 0; d < convInfo.inChannels; ++d) {
                 for (var yR = 0; yR < convInfo.outHeight; ++yR) {
                     var xRCorner = yR * strideHeight - padTop;
-                    var xRMin = Math.max(0, xRCorner);
-                    var xRMax = Math.min(convInfo.inHeight, filterHeight + xRCorner);
+                    var xRMin = xRCorner;
+                    while (xRMin < 0) {
+                        xRMin += dilationHeight;
+                    }
+                    var xRMax = Math.min(convInfo.inHeight, effectiveFilterHeight + xRCorner);
                     for (var yC = 0; yC < convInfo.outWidth; ++yC) {
                         var xCCorner = yC * strideWidth - padLeft;
-                        var xCMin = Math.max(0, xCCorner);
-                        var xCMax = Math.min(convInfo.inWidth, filterWidth + xCCorner);
+                        var xCMin = xCCorner;
+                        while (xCMin < 0) {
+                            xCMin += dilationWidth;
+                        }
+                        var xCMax = Math.min(convInfo.inWidth, effectiveFilterWidth + xCCorner);
                         var maxValue = Number.NEGATIVE_INFINITY;
                         var maxPosition = -1;
-                        for (var xR = xRMin; xR < xRMax; ++xR) {
+                        for (var xR = xRMin; xR < xRMax; xR += dilationHeight) {
                             var wR = xR - xRCorner;
-                            for (var xC = xCMin; xC < xCMax; ++xC) {
+                            for (var xC = xCMin; xC < xCMax; xC += dilationWidth) {
                                 var wC = xC - xCCorner;
                                 var pixel = x.get(b, xR, xC, d);
                                 if (pixel > maxValue) {
                                     maxValue = pixel;
-                                    maxPosition = wR * filterWidth + wC;
+                                    maxPosition = wR * effectiveFilterWidth + wC;
                                 }
                             }
                         }
@@ -4460,10 +5058,12 @@ var MathBackendCPU = (function () {
         var maxPositions = this.maxPoolPositions(x, convInfo);
         var strideHeight = convInfo.strideHeight;
         var strideWidth = convInfo.strideWidth;
-        var filterHeight = convInfo.filterHeight;
-        var filterWidth = convInfo.filterWidth;
-        var padLeft = filterWidth - 1 - convInfo.padInfo.left;
-        var padTop = filterHeight - 1 - convInfo.padInfo.top;
+        var dilationHeight = convInfo.dilationHeight;
+        var dilationWidth = convInfo.dilationWidth;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
+        var padLeft = effectiveFilterWidth - 1 - convInfo.padInfo.left;
+        var padTop = effectiveFilterHeight - 1 - convInfo.padInfo.top;
         var dx = ops.buffer(x.shape, 'float32');
         for (var b = 0; b < convInfo.batchSize; ++b) {
             for (var d = 0; d < convInfo.inChannels; ++d) {
@@ -4472,21 +5072,21 @@ var MathBackendCPU = (function () {
                         var dyRCorner = dxR - padTop;
                         var dyCCorner = dxC - padLeft;
                         var dotProd = 0;
-                        for (var wR = 0; wR < filterHeight; ++wR) {
+                        for (var wR = 0; wR < effectiveFilterHeight; wR += dilationHeight) {
                             var dyR = (dyRCorner + wR) / strideHeight;
                             if (dyR < 0 || dyR >= convInfo.outHeight ||
                                 Math.floor(dyR) !== dyR) {
                                 continue;
                             }
-                            for (var wC = 0; wC < filterWidth; ++wC) {
+                            for (var wC = 0; wC < effectiveFilterWidth; wC += dilationWidth) {
                                 var dyC = (dyCCorner + wC) / strideWidth;
                                 if (dyC < 0 || dyC >= convInfo.outWidth ||
                                     Math.floor(dyC) !== dyC) {
                                     continue;
                                 }
-                                var maxPos = filterHeight * filterWidth - 1 -
-                                    maxPositions.get(b, dyR, dyC, d);
-                                var curPos = wR * filterWidth + wC;
+                                var maxPos = effectiveFilterHeight * effectiveFilterWidth -
+                                    1 - maxPositions.get(b, dyR, dyC, d);
+                                var curPos = wR * effectiveFilterWidth + wC;
                                 var mask = maxPos === curPos ? 1 : 0;
                                 if (mask === 0) {
                                     continue;
@@ -4508,8 +5108,12 @@ var MathBackendCPU = (function () {
         var strideWidth = convInfo.strideWidth;
         var filterHeight = convInfo.filterHeight;
         var filterWidth = convInfo.filterWidth;
-        var padLeft = filterWidth - 1 - convInfo.padInfo.left;
-        var padTop = filterHeight - 1 - convInfo.padInfo.top;
+        var dilationHeight = convInfo.dilationHeight;
+        var dilationWidth = convInfo.dilationWidth;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
+        var padLeft = effectiveFilterWidth - 1 - convInfo.padInfo.left;
+        var padTop = effectiveFilterHeight - 1 - convInfo.padInfo.top;
         var dx = ops.buffer(x.shape, 'float32');
         var avgMultiplier = 1 / (filterHeight * filterWidth);
         for (var b = 0; b < convInfo.batchSize; ++b) {
@@ -4519,13 +5123,13 @@ var MathBackendCPU = (function () {
                         var dyRCorner = dxR - padTop;
                         var dyCCorner = dxC - padLeft;
                         var dotProd = 0;
-                        for (var wR = 0; wR < filterHeight; ++wR) {
+                        for (var wR = 0; wR < effectiveFilterHeight; wR += dilationHeight) {
                             var dyR = (dyRCorner + wR) / strideHeight;
                             if (dyR < 0 || dyR >= convInfo.outHeight ||
                                 Math.floor(dyR) !== dyR) {
                                 continue;
                             }
-                            for (var wC = 0; wC < filterWidth; ++wC) {
+                            for (var wC = 0; wC < effectiveFilterWidth; wC += dilationWidth) {
                                 var dyC = (dyCCorner + wC) / strideWidth;
                                 if (dyC < 0 || dyC >= convInfo.outWidth ||
                                     Math.floor(dyC) !== dyC) {
@@ -4555,7 +5159,8 @@ var MathBackendCPU = (function () {
     MathBackendCPU.prototype.resizeBilinear = function (x, newHeight, newWidth, alignCorners) {
         this.assertNotComplex(x, 'resizeBilinear');
         var _a = x.shape, batch = _a[0], oldHeight = _a[1], oldWidth = _a[2], numChannels = _a[3];
-        var output = ops.buffer([batch, newHeight, newWidth, numChannels], x.dtype);
+        var xValues = x.dataSync();
+        var result = new Float32Array(util.sizeFromShape([batch, newHeight, newWidth, numChannels]));
         var effectiveInputSize = [
             (alignCorners && newHeight > 1) ? oldHeight - 1 : oldHeight,
             (alignCorners && newWidth > 1) ? oldWidth - 1 : oldWidth
@@ -4564,37 +5169,46 @@ var MathBackendCPU = (function () {
             (alignCorners && newHeight > 1) ? newHeight - 1 : newHeight,
             (alignCorners && newWidth > 1) ? newWidth - 1 : newWidth
         ];
+        var outputIdx = 0;
+        var effectiveRowSizeRatio = effectiveInputSize[0] / effectiveOutputSize[0];
+        var effectiveColSizeRatio = effectiveInputSize[1] / effectiveOutputSize[1];
         for (var b = 0; b < batch; b++) {
             for (var r = 0; r < newHeight; r++) {
+                var sourceFracRow = effectiveRowSizeRatio * r;
+                var sourceRowFloor = Math.floor(sourceFracRow);
+                var rowFrac = sourceFracRow - sourceRowFloor;
+                var sourceRowCeil = Math.min(oldHeight - 1, Math.ceil(sourceFracRow));
+                var topRowOffset = b * x.strides[0] + sourceRowFloor * x.strides[1];
+                var botRowOffset = b * x.strides[0] + sourceRowCeil * x.strides[1];
                 for (var c = 0; c < newWidth; c++) {
+                    var sourceFracCol = effectiveColSizeRatio * c;
+                    var sourceColFloor = Math.floor(sourceFracCol);
+                    var colFrac = sourceFracCol - sourceColFloor;
+                    var sourceColCeil = Math.min(oldWidth - 1, Math.ceil(sourceFracCol));
+                    var topLeftOffest = topRowOffset + sourceColFloor * x.strides[2];
+                    var botLeftOffset = botRowOffset + sourceColFloor * x.strides[2];
+                    var topRightOffset = topRowOffset + +sourceColCeil * x.strides[2];
+                    var botRightOffest = botRowOffset + sourceColCeil * x.strides[2];
                     for (var d = 0; d < numChannels; d++) {
-                        var sourceFracRow = (effectiveInputSize[0]) * r / (effectiveOutputSize[0]);
-                        var sourceFracCol = (effectiveInputSize[1]) * c / (effectiveOutputSize[1]);
-                        var sourceRowFloor = Math.floor(sourceFracRow);
-                        var sourceRowCeil = Math.min(oldHeight - 1, Math.ceil(sourceFracRow));
-                        var sourceColFloor = Math.floor(sourceFracCol);
-                        var sourceColCeil = Math.min(oldWidth - 1, Math.ceil(sourceFracCol));
-                        var topLeft = x.get(b, sourceRowFloor, sourceColFloor, d);
-                        var bottomLeft = x.get(b, sourceRowCeil, sourceColFloor, d);
-                        var topRight = x.get(b, sourceRowFloor, sourceColCeil, d);
-                        var bottomRight = x.get(b, sourceRowCeil, sourceColCeil, d);
-                        var rowFrac = sourceFracRow - sourceRowFloor;
-                        var colFrac = sourceFracCol - sourceColFloor;
+                        var topLeft = xValues[topLeftOffest + d];
+                        var bottomLeft = xValues[botLeftOffset + d];
+                        var topRight = xValues[topRightOffset + d];
+                        var bottomRight = xValues[botRightOffest + d];
                         var top_1 = topLeft + (topRight - topLeft) * colFrac;
                         var bottom = bottomLeft + (bottomRight - bottomLeft) * colFrac;
                         var newValue = top_1 + (bottom - top_1) * rowFrac;
-                        output.set(newValue, b, r, c, d);
+                        result[outputIdx++] = newValue;
                     }
                 }
             }
         }
-        return output.toTensor();
+        return ops.tensor(result, [batch, newHeight, newWidth, numChannels]);
     };
     MathBackendCPU.prototype.resizeBilinearBackprop = function (dy, x, alignCorners) {
         this.assertNotComplex([dy, x], 'resizeBilinearBackprop');
         var _a = x.shape, batch = _a[0], xHeight = _a[1], xWidth = _a[2], depth = _a[3];
         var _b = dy.shape, yHeight = _b[1], yWidth = _b[2];
-        var output = ops.buffer([batch, xHeight, xWidth, depth], x.dtype);
+        var output = new Float32Array(batch * xHeight * xWidth * depth);
         var effectiveXSize = [
             (alignCorners && yHeight > 1) ? xHeight - 1 : xHeight,
             (alignCorners && yWidth > 1) ? xWidth - 1 : xWidth
@@ -4605,11 +5219,16 @@ var MathBackendCPU = (function () {
         ];
         var heightScale = effectiveXSize[0] / effectiveYSize[0];
         var widthScale = effectiveXSize[1] / effectiveYSize[1];
+        var dyValues = dy.dataSync();
+        var offset = 0;
         for (var b = 0; b < batch; b++) {
+            var bOffset = b * x.strides[0];
             for (var r = 0; r < yHeight; r++) {
                 var dxR = r * heightScale;
                 var topDxRIndex = Math.floor(dxR);
                 var bottomDxRIndex = Math.min(Math.ceil(dxR), xHeight - 1);
+                var topDxROffset = bOffset + topDxRIndex * x.strides[1];
+                var bottomDxROffset = bOffset + bottomDxRIndex * x.strides[1];
                 var dxRLerp = dxR - topDxRIndex;
                 var inverseDxRLerp = 1.0 - dxRLerp;
                 for (var c = 0; c < yWidth; c++) {
@@ -4618,30 +5237,33 @@ var MathBackendCPU = (function () {
                     var rightDxCIndex = Math.min(Math.ceil(dxC), xWidth - 1);
                     var dxCLerp = dxC - leftDxCIndex;
                     var inverseDxCLerp = 1.0 - dxCLerp;
+                    var topLeftRCOffset = topDxROffset + leftDxCIndex * x.strides[2];
+                    var topRightRCOffset = topDxROffset + rightDxCIndex * x.strides[2];
+                    var bottomLeftRCOffset = bottomDxROffset + leftDxCIndex * x.strides[2];
+                    var bottomRightRCOffset = bottomDxROffset + rightDxCIndex * x.strides[2];
+                    var inverseDxRLerpTimesInverseDxCLerp = inverseDxRLerp * inverseDxCLerp;
+                    var inverseDxRLerpTimesDxCLerp = inverseDxRLerp * dxCLerp;
+                    var dxRLerpTimesInverseDxCLerp = dxRLerp * inverseDxCLerp;
+                    var dxRLerpTimesDxCLerp = dxRLerp * dxCLerp;
                     for (var d = 0; d < depth; d++) {
-                        var dyVal = dy.get(b, r, c, d);
-                        var topLeft = output.get(b, topDxRIndex, leftDxCIndex, d);
-                        topLeft += dyVal * inverseDxRLerp * inverseDxCLerp;
-                        output.set(topLeft, b, topDxRIndex, leftDxCIndex, d);
-                        var topRight = output.get(b, topDxRIndex, rightDxCIndex, d);
-                        topRight += dyVal * inverseDxRLerp * dxCLerp;
-                        output.set(topRight, b, topDxRIndex, rightDxCIndex, d);
-                        var bottomLeft = output.get(b, bottomDxRIndex, leftDxCIndex, d);
-                        bottomLeft += dyVal * dxRLerp * inverseDxCLerp;
-                        output.set(bottomLeft, b, bottomDxRIndex, leftDxCIndex, d);
-                        var bottomRight = output.get(b, bottomDxRIndex, rightDxCIndex, d);
-                        bottomRight += dyVal * dxRLerp * dxCLerp;
-                        output.set(bottomRight, b, bottomDxRIndex, rightDxCIndex, d);
+                        var dyVal = dyValues[offset++];
+                        output[topLeftRCOffset + d] +=
+                            dyVal * inverseDxRLerpTimesInverseDxCLerp;
+                        output[topRightRCOffset + d] += dyVal * inverseDxRLerpTimesDxCLerp;
+                        output[bottomLeftRCOffset + d] +=
+                            dyVal * dxRLerpTimesInverseDxCLerp;
+                        output[bottomRightRCOffset + d] += dyVal * dxRLerpTimesDxCLerp;
                     }
                 }
             }
         }
-        return output.toTensor();
+        return ops.tensor4d(output, [batch, xWidth, xHeight, depth], x.dtype);
     };
     MathBackendCPU.prototype.resizeNearestNeighbor = function (x, newHeight, newWidth, alignCorners) {
         this.assertNotComplex(x, 'resizeNearestNeighbor');
         var _a = x.shape, batch = _a[0], oldHeight = _a[1], oldWidth = _a[2], numChannels = _a[3];
-        var output = ops.buffer([batch, newHeight, newWidth, numChannels], x.dtype);
+        var xValues = x.dataSync();
+        var output = new Float32Array(batch * newHeight * newWidth * numChannels);
         var effectiveInputSize = [
             (alignCorners && newHeight > 1) ? oldHeight - 1 : oldHeight,
             (alignCorners && newWidth > 1) ? oldWidth - 1 : oldWidth
@@ -4650,29 +5272,36 @@ var MathBackendCPU = (function () {
             (alignCorners && newHeight > 1) ? newHeight - 1 : newHeight,
             (alignCorners && newWidth > 1) ? newWidth - 1 : newWidth
         ];
+        var effectiveRowSizeRatio = effectiveInputSize[0] / effectiveOutputSize[0];
+        var effectiveColSizeRatio = effectiveInputSize[1] / effectiveOutputSize[1];
+        var outputOffset = 0;
         for (var b = 0; b < batch; b++) {
+            var batchOffset = b * x.strides[0];
             for (var r = 0; r < newHeight; r++) {
+                var sourceFracRow = effectiveRowSizeRatio * r;
+                var sourceNearestRow = Math.min(oldHeight - 1, alignCorners ? Math.round(sourceFracRow) :
+                    Math.floor(sourceFracRow));
+                var rowOffset = batchOffset + sourceNearestRow * x.strides[1];
                 for (var c = 0; c < newWidth; c++) {
+                    var sourceFracCol = effectiveColSizeRatio * c;
+                    var sourceNearestCol = Math.min(oldWidth - 1, alignCorners ? Math.round(sourceFracCol) :
+                        Math.floor(sourceFracCol));
+                    var colOffset = rowOffset + sourceNearestCol * x.strides[2];
                     for (var d = 0; d < numChannels; d++) {
-                        var sourceFracRow = (effectiveInputSize[0]) * r / (effectiveOutputSize[0]);
-                        var sourceFracCol = (effectiveInputSize[1]) * c / (effectiveOutputSize[1]);
-                        var sourceNearestRow = Math.min(oldHeight - 1, alignCorners ? Math.round(sourceFracRow) :
-                            Math.floor(sourceFracRow));
-                        var sourceNearestCol = Math.min(oldWidth - 1, alignCorners ? Math.round(sourceFracCol) :
-                            Math.floor(sourceFracCol));
-                        var newValue = x.get(b, sourceNearestRow, sourceNearestCol, d);
-                        output.set(newValue, b, r, c, d);
+                        var newVal = xValues[colOffset + d];
+                        output[outputOffset++] = newVal;
                     }
                 }
             }
         }
-        return output.toTensor();
+        return ops.tensor(output, [batch, newHeight, newWidth, numChannels], x.dtype);
     };
     MathBackendCPU.prototype.resizeNearestNeighborBackprop = function (dy, x, alignCorners) {
         this.assertNotComplex([dy, x], 'resizeNearestNeighborBackprop');
         var _a = x.shape, batch = _a[0], xHeight = _a[1], xWidth = _a[2], depth = _a[3];
         var _b = dy.shape, yHeight = _b[1], yWidth = _b[2];
-        var output = ops.buffer([batch, xHeight, xWidth, depth], x.dtype);
+        var output = new Float32Array(batch * xHeight * xWidth * depth);
+        var dyValues = dy.dataSync();
         var effectiveXSize = [
             (alignCorners && yHeight > 1) ? xHeight - 1 : xHeight,
             (alignCorners && yWidth > 1) ? xWidth - 1 : xWidth
@@ -4688,41 +5317,49 @@ var MathBackendCPU = (function () {
         var winHeight = (Math.ceil(invHeightScale) * 2) + 2;
         var winWidth = (Math.ceil(invWidthScale) * 2) + 2;
         for (var b = 0; b < batch; b++) {
+            var batchOffset = b * x.strides[0];
             for (var r = 0; r < xHeight; r++) {
+                var rowOffset = batchOffset + r * x.strides[1];
+                var startRLerp = Math.floor(r * invHeightScale);
+                var startDyR = Math.floor(startRLerp - (winHeight / 2));
                 for (var c = 0; c < xWidth; c++) {
-                    var startRLerp = Math.floor(r * invHeightScale);
-                    var startDyR = Math.floor(startRLerp - (winHeight / 2));
+                    var colOffset = rowOffset + c * x.strides[2];
                     var startCLerp = Math.floor(c * invWidthScale);
                     var startDyC = Math.floor(startCLerp - (winWidth / 2));
                     for (var d = 0; d < depth; d++) {
                         var accum = 0;
-                        for (var dyROffset = 0; dyROffset < winHeight; dyROffset++) {
-                            var dyR = dyROffset + startDyR;
+                        for (var dyRIndex = 0; dyRIndex < winHeight; dyRIndex++) {
+                            var dyR = dyRIndex + startDyR;
                             if (dyR < 0 || dyR >= yHeight) {
                                 continue;
                             }
-                            for (var dyCOffSet = 0; dyCOffSet < winWidth; dyCOffSet++) {
-                                var dyC = dyCOffSet + startDyC;
+                            var dyROffset = batchOffset + dyR * dy.strides[1];
+                            var sourceFracRow = dyR * heightScale;
+                            var sourceNearestRow = Math.min(xHeight - 1, alignCorners ? Math.round(sourceFracRow) :
+                                Math.floor(sourceFracRow));
+                            if (r !== sourceNearestRow) {
+                                continue;
+                            }
+                            for (var dyCIndex = 0; dyCIndex < winWidth; dyCIndex++) {
+                                var dyC = dyCIndex + startDyC;
                                 if (dyC < 0 || dyC >= yWidth) {
                                     continue;
                                 }
-                                var sourceFracRow = effectiveXSize[0] * (dyR / effectiveYSize[0]);
-                                var sourceFracCol = effectiveXSize[1] * (dyC / effectiveYSize[1]);
-                                var sourceNearestRow = Math.min(xHeight - 1, alignCorners ? Math.round(sourceFracRow) :
-                                    Math.floor(sourceFracRow));
+                                var dyCOffset = dyROffset + dyC * dy.strides[2];
+                                var sourceFracCol = dyC * widthScale;
                                 var sourceNearestCol = Math.min(xWidth - 1, alignCorners ? Math.round(sourceFracCol) :
                                     Math.floor(sourceFracCol));
-                                if (r === sourceNearestRow && c === sourceNearestCol) {
-                                    accum += dy.get(b, dyR, dyC, d);
+                                if (c === sourceNearestCol) {
+                                    accum += dyValues[dyCOffset + d];
                                 }
                             }
                         }
-                        output.set(accum, b, r, c, d);
+                        output[colOffset + d] = accum;
                     }
                 }
             }
         }
-        return output.toTensor();
+        return ops.tensor4d(output, x.shape, x.dtype);
     };
     MathBackendCPU.prototype.batchNormalization = function (x, mean, variance, varianceEpsilon, scale, offset) {
         this.assertNotComplex([x, mean, variance, scale, offset], 'batchNormalization');
@@ -4862,6 +5499,79 @@ var MathBackendCPU = (function () {
         var scoresVals = scores.dataSync();
         return non_max_suppression_impl_1.nonMaxSuppressionImpl(boxesVals, scoresVals, maxOutputSize, iouThreshold, scoreThreshold);
     };
+    MathBackendCPU.prototype.fft = function (x) {
+        if (x.shape[0] !== 1) {
+            throw new Error("tf.fft() on CPU only supports vectors.");
+        }
+        var inverse = false;
+        return this.fftImpl(x, inverse);
+    };
+    MathBackendCPU.prototype.ifft = function (x) {
+        if (x.shape[0] !== 1) {
+            throw new Error("tf.ifft() on CPU only supports vectors.");
+        }
+        var inverse = true;
+        return this.fftImpl(x, inverse);
+    };
+    MathBackendCPU.prototype.fftImpl = function (x, inverse) {
+        var x1D = x.as1D();
+        var n = x1D.size;
+        if (this.isExponentOf2(n)) {
+            var result = this.fftRadix2(x1D, n, inverse).as2D(x.shape[0], x.shape[1]);
+            if (inverse) {
+                result = ops.complex(ops.real(result).div(ops_1.scalar(n)), ops.imag(result).div(ops_1.scalar(n)));
+            }
+            return result;
+        }
+        else {
+            var data = x.dataSync();
+            var rawOutput = this.fourierTransformByMatmul(data, n, inverse);
+            var output = complex_util.splitRealAndImagArrays(rawOutput);
+            return ops.complex(output.real, output.imag).as2D(x.shape[0], x.shape[1]);
+        }
+    };
+    MathBackendCPU.prototype.isExponentOf2 = function (size) {
+        return (size & size - 1) === 0;
+    };
+    MathBackendCPU.prototype.fftRadix2 = function (input, size, inverse) {
+        if (size === 1) {
+            return input;
+        }
+        var data = input.dataSync();
+        var half = size / 2;
+        var evenComplex = complex_util.complexWithEvenIndex(data);
+        var evenTensor = ops.complex(evenComplex.real, evenComplex.imag).as1D();
+        var oddComplex = complex_util.complexWithOddIndex(data);
+        var oddTensor = ops.complex(oddComplex.real, oddComplex.imag).as1D();
+        evenTensor = this.fftRadix2(evenTensor, half, inverse);
+        oddTensor = this.fftRadix2(oddTensor, half, inverse);
+        var e = complex_util.exponents(size, inverse);
+        var exponent = ops.complex(e.real, e.imag).mul(oddTensor);
+        var addPart = evenTensor.add(exponent);
+        var subPart = evenTensor.sub(exponent);
+        var realTensor = ops.real(addPart).concat(ops.real(subPart));
+        var imagTensor = ops.imag(addPart).concat(ops.imag(subPart));
+        return ops.complex(realTensor, imagTensor).as1D();
+    };
+    MathBackendCPU.prototype.fourierTransformByMatmul = function (data, size, inverse) {
+        var ret = new Float32Array(size * 2);
+        for (var r = 0; r < size; r++) {
+            var real = 0.0;
+            var imag = 0.0;
+            for (var c = 0; c < size; c++) {
+                var e = complex_util.exponent(r * c, size, inverse);
+                var term = complex_util.getComplexWithIndex(data, c);
+                real += term.real * e.real - term.imag * e.imag;
+                imag += term.real * e.imag + term.imag * e.real;
+            }
+            if (inverse) {
+                real /= size;
+                imag /= size;
+            }
+            complex_util.assignToTypedArray(ret, real, imag, r);
+        }
+        return ret;
+    };
     MathBackendCPU.prototype.depthToSpace = function (x, blockSize, dataFormat) {
         util.assert(dataFormat === 'NHWC', "Only NHWC dataFormat supported on CPU for depthToSpace. Got " + dataFormat);
         util.assert(blockSize > 1, "blockSize should be > 1 for depthToSpace, but was: " + blockSize);
@@ -4995,9 +5705,7 @@ var MathBackendCPU = (function () {
             var heightScale = (cropHeight > 1) ?
                 (y2 - y1) * (imageHeight - 1) / (cropHeight - 1) :
                 0;
-            var widthScale = (cropWidth > 1) ?
-                (x2 - x1) * (imageWidth - 1) / (cropWidth - 1) :
-                0;
+            var widthScale = (cropWidth > 1) ? (x2 - x1) * (imageWidth - 1) / (cropWidth - 1) : 0;
             for (var y = 0; y < cropHeight; y++) {
                 var yInd = (cropHeight > 1) ?
                     y1 * (imageHeight - 1) + y * (heightScale) :
@@ -5005,8 +5713,7 @@ var MathBackendCPU = (function () {
                 if (yInd < 0 || yInd > imageHeight - 1) {
                     for (var x = 0; x < cropWidth; x++) {
                         for (var c = 0; c < numChannels; c++) {
-                            var ind = c + x * outStride[2] + y * outStride[1] +
-                                b * outStride[0];
+                            var ind = c + x * outStride[2] + y * outStride[1] + b * outStride[0];
                             output.values[ind] = extrapolationValue;
                         }
                     }
@@ -5022,8 +5729,7 @@ var MathBackendCPU = (function () {
                             0.5 * (x1 + x2) * (imageWidth - 1);
                         if (xInd < 0 || xInd > imageWidth - 1) {
                             for (var c = 0; c < numChannels; c++) {
-                                var ind = c + x * outStride[2] + y * outStride[1] +
-                                    b * outStride[0];
+                                var ind = c + x * outStride[2] + y * outStride[1] + b * outStride[0];
                                 output.values[ind] = extrapolationValue;
                             }
                             continue;
@@ -5046,8 +5752,7 @@ var MathBackendCPU = (function () {
                             var bottomRight = imageVals[ind];
                             var top_2 = topLeft + (topRight - topLeft) * xLerp;
                             var bottom = bottomLeft + (bottomRight - bottomLeft) * xLerp;
-                            ind = c + x * outStride[2] + y * outStride[1] +
-                                b * outStride[0];
+                            ind = c + x * outStride[2] + y * outStride[1] + b * outStride[0];
                             output.values[ind] = top_2 + ((bottom - top_2) * yLerp);
                         }
                     }
@@ -5059,8 +5764,7 @@ var MathBackendCPU = (function () {
                             0.5 * (x1 + x2) * (imageWidth - 1);
                         if (xInd < 0 || xInd > imageWidth - 1) {
                             for (var c = 0; c < numChannels; c++) {
-                                var ind = c + x * outStride[2] + y * outStride[1] +
-                                    b * outStride[0];
+                                var ind = c + x * outStride[2] + y * outStride[1] + b * outStride[0];
                                 output.values[ind] = extrapolationValue;
                             }
                             continue;
@@ -5068,10 +5772,9 @@ var MathBackendCPU = (function () {
                         var closestX = Math.round(xInd);
                         var closestY = Math.round(yInd);
                         for (var c = 0; c < numChannels; c++) {
-                            var inInd = c + closestX * inStride[2]
-                                + closestY * inStride[1] + bInd * inStride[0];
-                            var outInd = c + x * outStride[2] + y * outStride[1] +
-                                b * outStride[0];
+                            var inInd = c + closestX * inStride[2] +
+                                closestY * inStride[1] + bInd * inStride[0];
+                            var outInd = c + x * outStride[2] + y * outStride[1] + b * outStride[0];
                             output.values[outInd] = imageVals[inInd];
                         }
                     }
@@ -5080,12 +5783,84 @@ var MathBackendCPU = (function () {
         }
         return output.toTensor();
     };
+    MathBackendCPU.prototype.sparseToDense = function (sparseIndices, sparseValues, outputShape, defaultValue) {
+        var _a = scatter_nd_util.calculateShapes(sparseValues, sparseIndices, outputShape), sliceRank = _a.sliceRank, numUpdates = _a.numUpdates, sliceSize = _a.sliceSize, strides = _a.strides, outputSize = _a.outputSize;
+        var sumDupeIndices = false;
+        return this.scatter(sparseIndices, sparseValues, outputShape, outputSize, sliceSize, numUpdates, sliceRank, strides, defaultValue, sumDupeIndices);
+    };
+    MathBackendCPU.prototype.gatherND = function (x, indices) {
+        var indicesShape = indices.shape;
+        var sliceRank = indicesShape[indicesShape.length - 1];
+        var _a = gather_nd_util.prepareAndValidate(x, indices), resultShape = _a[0], numSlices = _a[1], sliceSize = _a[2], strides = _a[3];
+        if (numSlices === 0) {
+            return ops_1.tensor([], resultShape, x.dtype);
+        }
+        var buffer = new tensor_1.TensorBuffer([numSlices, sliceSize], x.dtype);
+        var indicesData = indices.dataSync();
+        var xData = x.dataSync();
+        for (var i = 0; i < numSlices; i++) {
+            var index = [];
+            var flattenIndex = 0;
+            for (var j = 0; j < sliceRank; j++) {
+                var dim = indicesData[i * sliceRank + j];
+                flattenIndex += dim * strides[j];
+                index.push(dim);
+            }
+            if (flattenIndex < 0 || flattenIndex >= x.size / sliceSize) {
+                throw new Error("Invalid indices: " + index + " does not index into " + x.shape);
+            }
+            for (var k = 0; k < sliceSize; k++) {
+                buffer.values[i * sliceSize + k] = xData[flattenIndex * sliceSize + k];
+            }
+        }
+        return buffer.toTensor().reshape(resultShape);
+    };
+    MathBackendCPU.prototype.scatterND = function (indices, updates, shape) {
+        var _a = scatter_nd_util.calculateShapes(updates, indices, shape), sliceRank = _a.sliceRank, numUpdates = _a.numUpdates, sliceSize = _a.sliceSize, strides = _a.strides, outputSize = _a.outputSize;
+        var defaultValue = ops_1.scalar(0);
+        var sumDupeIndices = true;
+        return this.scatter(indices, updates, shape, outputSize, sliceSize, numUpdates, sliceRank, strides, defaultValue, sumDupeIndices);
+    };
+    MathBackendCPU.prototype.scatter = function (indices, updates, shape, outputSize, sliceSize, numUpdates, sliceRank, strides, defaultValue, sumDupeIndices) {
+        var flattenShape = [outputSize / sliceSize, sliceSize];
+        var indicesData = indices.dataSync();
+        var updatesData = updates.dataSync();
+        if (outputSize === 0) {
+            return ops_1.tensor([], shape, updates.dtype);
+        }
+        var buffer = new tensor_1.TensorBuffer(flattenShape, updates.dtype);
+        buffer.values.fill(defaultValue.dataSync()[0]);
+        for (var i = 0; i < numUpdates; i++) {
+            var index = [];
+            var flattenIndex = 0;
+            for (var j = 0; j < sliceRank; j++) {
+                var dim = indicesData[i * sliceRank + j];
+                index.push(dim);
+                flattenIndex += dim * strides[j];
+            }
+            if (flattenIndex < 0 || flattenIndex >= outputSize / sliceSize) {
+                throw new Error("Invalid indices: " + index + " does not index into " + shape);
+            }
+            for (var k = 0; k < sliceSize; k++) {
+                if (sumDupeIndices) {
+                    buffer.values[flattenIndex * sliceSize + k] +=
+                        updatesData[i * sliceSize + k];
+                }
+                else {
+                    buffer.values[flattenIndex * sliceSize + k] = updates.rank === 0 ?
+                        updatesData[0] :
+                        updatesData[i * sliceSize + k];
+                }
+            }
+        }
+        return buffer.toTensor().reshape(shape);
+    };
     return MathBackendCPU;
 }());
 exports.MathBackendCPU = MathBackendCPU;
 environment_1.ENV.registerBackend('cpu', function () { return new MathBackendCPU(); }, 1, tensor_1.setTensorTracker);
 
-},{"../environment":4,"../log":73,"../ops/array_ops_util":75,"../ops/axis_util":76,"../ops/broadcast_util":79,"../ops/concat_util":83,"../ops/erf_util":86,"../ops/ops":97,"../ops/selu_util":106,"../ops/slice_util":108,"../tensor":127,"../types":133,"../util":134,"./backend_util":21,"./complex_util":23,"./non_max_suppression_impl":24,"./split_shared":25,"./topk_impl":26,"./where_impl":72,"seedrandom":142}],21:[function(require,module,exports){
+},{"../environment":5,"../log":87,"../ops/array_ops_util":90,"../ops/axis_util":91,"../ops/broadcast_util":94,"../ops/concat_util":98,"../ops/erf_util":102,"../ops/gather_nd_util":104,"../ops/ops":115,"../ops/scatter_nd_util":123,"../ops/selu_util":126,"../ops/slice_util":128,"../tensor":150,"../types":156,"../util":157,"./backend":21,"./backend_util":23,"./complex_util":25,"./non_max_suppression_impl":26,"./split_shared":28,"./topk_impl":29,"./where_impl":86,"seedrandom":165}],23:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_ops_1 = require("../ops/tensor_ops");
@@ -5131,7 +5906,7 @@ function reshapeTensor(x, shape) {
 }
 exports.reshapeTensor = reshapeTensor;
 
-},{"../ops/tensor_ops":111,"../tensor":127,"../util":134}],22:[function(require,module,exports){
+},{"../ops/tensor_ops":134,"../tensor":150,"../util":157}],24:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -5169,13 +5944,16 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
     }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+var canvas_util_1 = require("../canvas_util");
 var environment_1 = require("../environment");
 var globals_1 = require("../globals");
 var log_1 = require("../log");
 var array_ops_util = require("../ops/array_ops_util");
 var axis_util = require("../ops/axis_util");
 var concat_util_1 = require("../ops/concat_util");
+var gather_nd_util = require("../ops/gather_nd_util");
 var reduce_util = require("../ops/reduce_util");
+var scatter_nd_util = require("../ops/scatter_nd_util");
 var segment_util = require("../ops/segment_util");
 var slice_util_1 = require("../ops/slice_util");
 var softmax_1 = require("../ops/softmax");
@@ -5184,6 +5962,7 @@ var tensor_1 = require("../tensor");
 var types_1 = require("../types");
 var util = require("../util");
 var util_1 = require("../util");
+var backend_1 = require("./backend");
 var backend_util = require("./backend_util");
 var complex_util_1 = require("./complex_util");
 var non_max_suppression_impl_1 = require("./non_max_suppression_impl");
@@ -5192,39 +5971,48 @@ var topk_impl_1 = require("./topk_impl");
 var argminmax_gpu_1 = require("./webgl/argminmax_gpu");
 var avg_pool_backprop_gpu_1 = require("./webgl/avg_pool_backprop_gpu");
 var batchnorm_gpu_1 = require("./webgl/batchnorm_gpu");
+var batchnorm_packed_gpu_1 = require("./webgl/batchnorm_packed_gpu");
 var binaryop_complex_gpu = require("./webgl/binaryop_complex_gpu");
 var binaryop_complex_gpu_1 = require("./webgl/binaryop_complex_gpu");
 var binaryop_gpu = require("./webgl/binaryop_gpu");
 var binaryop_gpu_1 = require("./webgl/binaryop_gpu");
 var clip_gpu_1 = require("./webgl/clip_gpu");
+var complex_abs_gpu_1 = require("./webgl/complex_abs_gpu");
 var concat_gpu_1 = require("./webgl/concat_gpu");
 var conv_backprop_gpu_1 = require("./webgl/conv_backprop_gpu");
 var conv_backprop_gpu_depthwise_1 = require("./webgl/conv_backprop_gpu_depthwise");
 var conv_gpu_1 = require("./webgl/conv_gpu");
-var crop_and_resize_gpu_1 = require("./webgl/crop_and_resize_gpu");
 var conv_gpu_depthwise_1 = require("./webgl/conv_gpu_depthwise");
+var crop_and_resize_gpu_1 = require("./webgl/crop_and_resize_gpu");
 var cumsum_gpu_1 = require("./webgl/cumsum_gpu");
 var depth_to_space_gpu_1 = require("./webgl/depth_to_space_gpu");
 var encode_float_gpu_1 = require("./webgl/encode_float_gpu");
+var fft_gpu = require("./webgl/fft_gpu");
+var fft_gpu_1 = require("./webgl/fft_gpu");
 var from_pixels_gpu_1 = require("./webgl/from_pixels_gpu");
 var gather_gpu_1 = require("./webgl/gather_gpu");
+var gather_nd_gpu_1 = require("./webgl/gather_nd_gpu");
 var gpgpu_context_1 = require("./webgl/gpgpu_context");
 var gpgpu_math = require("./webgl/gpgpu_math");
-var gpgpu_util = require("./webgl/gpgpu_util");
+var im2col_gpu_1 = require("./webgl/im2col_gpu");
 var lrn_gpu_1 = require("./webgl/lrn_gpu");
 var lrn_grad_gpu_1 = require("./webgl/lrn_grad_gpu");
 var max_pool_backprop_gpu_1 = require("./webgl/max_pool_backprop_gpu");
 var mulmat_gpu_1 = require("./webgl/mulmat_gpu");
+var mulmat_packed_gpu_1 = require("./webgl/mulmat_packed_gpu");
 var multinomial_gpu_1 = require("./webgl/multinomial_gpu");
 var onehot_gpu_1 = require("./webgl/onehot_gpu");
+var pack_gpu_1 = require("./webgl/pack_gpu");
 var pad_gpu_1 = require("./webgl/pad_gpu");
 var pool_gpu_1 = require("./webgl/pool_gpu");
 var reduce_gpu_1 = require("./webgl/reduce_gpu");
+var reshape_packed_gpu_1 = require("./webgl/reshape_packed_gpu");
 var resize_bilinear_backprop_gpu_1 = require("./webgl/resize_bilinear_backprop_gpu");
 var resize_bilinear_gpu_1 = require("./webgl/resize_bilinear_gpu");
 var resize_nearest_neighbor_backprop_gpu_1 = require("./webgl/resize_nearest_neighbor_backprop_gpu");
 var resize_nearest_neighbor_gpu_1 = require("./webgl/resize_nearest_neighbor_gpu");
 var reverse_gpu_1 = require("./webgl/reverse_gpu");
+var scatter_gpu_1 = require("./webgl/scatter_gpu");
 var segment_gpu_1 = require("./webgl/segment_gpu");
 var select_gpu_1 = require("./webgl/select_gpu");
 var slice_gpu_1 = require("./webgl/slice_gpu");
@@ -5235,16 +6023,18 @@ var tile_gpu_1 = require("./webgl/tile_gpu");
 var transpose_gpu_1 = require("./webgl/transpose_gpu");
 var unary_op = require("./webgl/unaryop_gpu");
 var unaryop_gpu_1 = require("./webgl/unaryop_gpu");
+var unpack_gpu_1 = require("./webgl/unpack_gpu");
 var webgl_util = require("./webgl/webgl_util");
 var where_impl_1 = require("./where_impl");
+var CPU_HANDOFF_SIZE_THRESHOLD = 10;
 var BEFORE_PAGING_CONSTANT = 300;
-exports.SIZE_UPLOAD_UNIFORM = 32;
+exports.SIZE_UPLOAD_UNIFORM = 4;
+exports.MATMUL_SHARED_DIM_THRESHOLD = 1000;
 var MathBackendWebGL = (function () {
     function MathBackendWebGL(gpgpu, delayedStorage) {
         if (delayedStorage === void 0) { delayedStorage = true; }
         this.gpgpu = gpgpu;
         this.delayedStorage = delayedStorage;
-        this.texData = new WeakMap();
         this.pendingRead = new WeakMap();
         this.pendingDisposal = new WeakSet();
         this.lruDataGPU = [];
@@ -5256,19 +6046,22 @@ var MathBackendWebGL = (function () {
         if (environment_1.ENV.get('WEBGL_VERSION') < 1) {
             throw new Error('WebGL is not supported on this device');
         }
-        if (environment_1.ENV.get('IS_BROWSER')) {
-            this.canvas = document.createElement('canvas');
-        }
         if (gpgpu == null) {
-            this.gpgpu = new gpgpu_context_1.GPGPUContext(gpgpu_util.createWebGLContext(this.canvas));
+            var gl = canvas_util_1.getWebGLContext(environment_1.ENV.get('WEBGL_VERSION'));
+            this.gpgpu = new gpgpu_context_1.GPGPUContext(gl);
+            this.canvas = gl.canvas;
             this.gpgpuCreatedLocally = true;
         }
         else {
             this.gpgpuCreatedLocally = false;
+            this.canvas = gpgpu.gl.canvas;
         }
-        this.NUM_BYTES_BEFORE_PAGING =
-            (window.screen.height * window.screen.width * window.devicePixelRatio) *
-                BEFORE_PAGING_CONSTANT;
+        if (environment_1.ENV.get('WEBGL_PAGING_ENABLED')) {
+            this.NUM_BYTES_BEFORE_PAGING =
+                (window.screen.height * window.screen.width *
+                    window.devicePixelRatio) *
+                    BEFORE_PAGING_CONSTANT;
+        }
         this.textureManager = new texture_manager_1.TextureManager(this.gpgpu);
     }
     MathBackendWebGL.prototype.register = function (dataId, shape, dtype) {
@@ -5282,8 +6075,12 @@ var MathBackendWebGL = (function () {
             texture: null,
             complexTensors: null,
             texShape: null,
-            usage: tex_util_1.TextureUsage.RENDER
+            usage: tex_util_1.TextureUsage.RENDER,
+            isPacked: false
         });
+    };
+    MathBackendWebGL.prototype.setDataMover = function (dataMover) {
+        this.texData = new backend_1.DataStorage(dataMover);
     };
     MathBackendWebGL.prototype.fromPixels = function (pixels, numChannels) {
         if (pixels == null) {
@@ -5300,7 +6097,7 @@ var MathBackendWebGL = (function () {
                 ("ImageData, but was " + pixels.constructor.name));
         }
         if (pixels instanceof HTMLVideoElement) {
-            if (this.fromPixelsCanvas == null) {
+            if (this.fromPixels2DContext == null) {
                 if (!environment_1.ENV.get('IS_BROWSER')) {
                     throw new Error('Can\'t read pixels from HTMLImageElement outside the browser.');
                 }
@@ -5309,34 +6106,39 @@ var MathBackendWebGL = (function () {
                         'once the DOM is ready. One way to do that is to add an event ' +
                         'listener for `DOMContentLoaded` on the document object');
                 }
-                this.fromPixelsCanvas = document.createElement('canvas');
+                this.fromPixels2DContext =
+                    document.createElement('canvas').getContext('2d');
             }
-            this.fromPixelsCanvas.width = pixels.width;
-            this.fromPixelsCanvas.height = pixels.height;
-            this.fromPixelsCanvas.getContext('2d').drawImage(pixels, 0, 0, pixels.width, pixels.height);
-            pixels = this.fromPixelsCanvas;
+            this.fromPixels2DContext.canvas.width = pixels.width;
+            this.fromPixels2DContext.canvas.height = pixels.height;
+            this.fromPixels2DContext.drawImage(pixels, 0, 0, pixels.width, pixels.height);
+            pixels = this.fromPixels2DContext.canvas;
         }
-        var tempPixelArray = tensor_1.Tensor.make(texShape, {}, 'int32');
-        this.texData.get(tempPixelArray.dataId).usage = tex_util_1.TextureUsage.PIXELS;
-        this.gpgpu.uploadPixelDataToTexture(this.getTexture(tempPixelArray.dataId), pixels);
+        var tempPixelHandle = this.makeTensorHandle(texShape, 'int32');
+        this.texData.get(tempPixelHandle.dataId).usage = tex_util_1.TextureUsage.PIXELS;
+        this.gpgpu.uploadPixelDataToTexture(this.getTexture(tempPixelHandle.dataId), pixels);
         var program = new from_pixels_gpu_1.FromPixelsProgram(outShape);
-        var res = this.compileAndRun(program, [tempPixelArray]);
-        tempPixelArray.dispose();
+        var res = this.compileAndRun(program, [tempPixelHandle]);
+        this.disposeData(tempPixelHandle.dataId);
         return res;
+    };
+    MathBackendWebGL.prototype.makeTensorHandle = function (shape, dtype) {
+        var dataId = {};
+        this.register(dataId, shape, dtype);
+        return { dataId: dataId, shape: shape, dtype: dtype };
     };
     MathBackendWebGL.prototype.write = function (dataId, values) {
         if (values == null) {
             throw new Error('MathBackendWebGL.write(): values can not be null');
         }
-        this.throwIfNoData(dataId);
         var texData = this.texData.get(dataId);
-        var texture = texData.texture, texShape = texData.texShape, usage = texData.usage, dtype = texData.dtype;
+        var texture = texData.texture, texShape = texData.texShape, usage = texData.usage, dtype = texData.dtype, isPacked = texData.isPacked;
         if (dtype === 'complex64') {
             throw new Error("Cannot write to a complex64 dtype. " +
                 "Please use tf.complex(real, imag).");
         }
         if (texture != null) {
-            this.releaseTexture(dataId, texture, texShape, usage);
+            this.releaseTexture(dataId, texture, texShape, usage, isPacked);
             texData.texture = null;
             texData.texShape = null;
         }
@@ -5347,12 +6149,10 @@ var MathBackendWebGL = (function () {
         }
     };
     MathBackendWebGL.prototype.readSync = function (dataId) {
-        this.throwIfNoData(dataId);
         var texData = this.texData.get(dataId);
-        var shape = texData.shape, texture = texData.texture, values = texData.values, texShape = texData.texShape, dtype = texData.dtype, complexTensors = texData.complexTensors;
+        var values = texData.values, dtype = texData.dtype, complexTensors = texData.complexTensors;
         if (values != null) {
-            this.cacheOnCPU(dataId);
-            return values;
+            return this.convertAndCacheOnCPU(dataId);
         }
         var shouldTimeProgram = this.activeTimers != null;
         var start;
@@ -5366,18 +6166,16 @@ var MathBackendWebGL = (function () {
             result = complex_util_1.mergeRealAndImagArrays(realValues, imagValues);
         }
         else {
-            result =
-                this.getValuesFromTexture(texture, dataId, dtype, texShape, shape);
+            result = this.getValuesFromTexture(dataId);
         }
         if (shouldTimeProgram) {
             this.downloadWaitMs += performance.now() - start;
         }
-        this.cacheOnCPU(dataId, result);
-        return texData.values;
+        return this.convertAndCacheOnCPU(dataId, result);
     };
     MathBackendWebGL.prototype.read = function (dataId) {
         return __awaiter(this, void 0, void 0, function () {
-            var subscribers_1, texData, shape, texture, values, texShape, dtype, bufferOrTexture, vals, subscribers;
+            var subscribers_1, texData, texture, values, texShape, bufferOrTexture, vals, dTypeVals, subscribers;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
@@ -5385,12 +6183,10 @@ var MathBackendWebGL = (function () {
                             subscribers_1 = this.pendingRead.get(dataId);
                             return [2, new Promise(function (resolve) { return subscribers_1.push(resolve); })];
                         }
-                        this.throwIfNoData(dataId);
                         texData = this.texData.get(dataId);
-                        shape = texData.shape, texture = texData.texture, values = texData.values, texShape = texData.texShape, dtype = texData.dtype;
+                        texture = texData.texture, values = texData.values, texShape = texData.texShape;
                         if (values != null) {
-                            this.cacheOnCPU(dataId);
-                            return [2, values];
+                            return [2, this.convertAndCacheOnCPU(dataId)];
                         }
                         this.pendingRead.set(dataId, []);
                         if (!environment_1.ENV.get('WEBGL_DOWNLOAD_FLOAT_ENABLED') &&
@@ -5403,43 +6199,51 @@ var MathBackendWebGL = (function () {
                     case 1:
                         _a.sent();
                         if (bufferOrTexture instanceof WebGLTexture) {
-                            vals = this.getValuesFromTexture(texture, dataId, dtype, texShape, shape);
+                            vals = this.getValuesFromTexture(dataId);
                         }
                         else {
                             vals = this.gpgpu.downloadFloat32MatrixFromBuffer(bufferOrTexture, texShape[0], texShape[1]);
                         }
-                        this.cacheOnCPU(dataId, vals);
+                        dTypeVals = this.convertAndCacheOnCPU(dataId, vals);
                         subscribers = this.pendingRead.get(dataId);
                         this.pendingRead.delete(dataId);
-                        subscribers.forEach(function (resolve) { return resolve(vals); });
+                        subscribers.forEach(function (resolve) { return resolve(dTypeVals); });
                         if (this.pendingDisposal.has(dataId)) {
                             this.pendingDisposal.delete(dataId);
                             this.disposeData(dataId);
                         }
-                        return [2, vals];
+                        return [2, dTypeVals];
                 }
             });
         });
     };
-    MathBackendWebGL.prototype.getValuesFromTexture = function (texture, dataId, dtype, texShape, shape) {
+    MathBackendWebGL.prototype.getValuesFromTexture = function (dataId) {
+        var _a = this.texData.get(dataId), shape = _a.shape, dtype = _a.dtype, texture = _a.texture, texShape = _a.texShape;
         if (environment_1.ENV.get('WEBGL_DOWNLOAD_FLOAT_ENABLED')) {
-            return this.gpgpu.downloadFloat32MatrixFromOutputTexture(texture, texShape[0], texShape[1]);
+            if (this.texData.get(dataId).isPacked) {
+                var batch = util.sizeFromShape(shape.slice(0, shape.length - 2));
+                var rows = shape.length > 1 ? shape[shape.length - 2] : 1;
+                var cols = shape[shape.length - 1];
+                return this.gpgpu.downloadMatrixFromPackedTexture(texture, batch, rows, cols, texShape[0], texShape[1]);
+            }
+            else {
+                return this.gpgpu.downloadFloat32MatrixFromOutputTexture(texture, texShape[0], texShape[1]);
+            }
         }
-        var tmpTarget = tensor_1.Tensor.make(shape, {});
+        var tmpTarget = this.makeTensorHandle(shape, 'float32');
+        tmpTarget.size = util_1.sizeFromShape(shape);
         this.texData.get(tmpTarget.dataId).usage = tex_util_1.TextureUsage.DOWNLOAD;
-        var tmpInput = tensor_1.Tensor.make(shape, { dataId: dataId }, dtype);
         var program = new encode_float_gpu_1.EncodeFloatProgram(shape);
         var pageToCpu = false;
-        this.compileAndRun(program, [tmpInput], tmpTarget, null, pageToCpu);
+        this.compileAndRun(program, [{ shape: shape, dtype: dtype, dataId: dataId }], tmpTarget, null, pageToCpu);
         var tmpData = this.texData.get(tmpTarget.dataId);
         var vals = this.gpgpu.downloadByteEncodedFloatMatrixFromOutputTexture(tmpData.texture, tmpData.texShape[0], tmpData.texShape[1]);
-        tmpInput.dispose();
-        tmpTarget.dispose();
+        this.disposeData(tmpTarget.dataId);
         return vals;
     };
     MathBackendWebGL.prototype.time = function (f) {
         return __awaiter(this, void 0, void 0, function () {
-            var oldActiveTimers, newActiveTimers, outerMostTime, flattenedActiveTimers, kernelMs, res;
+            var oldActiveTimers, newActiveTimers, outerMostTime, flattenedActiveTimerQueries, flattenedActiveTimerNames, kernelMs, res;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
@@ -5455,22 +6259,26 @@ var MathBackendWebGL = (function () {
                         }
                         this.activeTimers = newActiveTimers;
                         f();
-                        flattenedActiveTimers = util.flatten(this.activeTimers);
+                        flattenedActiveTimerQueries = util.flatten(this.activeTimers.map(function (d) { return d.query; }))
+                            .filter(function (d) { return d != null; });
+                        flattenedActiveTimerNames = util.flatten(this.activeTimers.map(function (d) { return d.name; }))
+                            .filter(function (d) { return d != null; });
                         this.activeTimers = oldActiveTimers;
                         if (outerMostTime) {
                             this.programTimersStack = null;
                         }
-                        return [4, Promise.all(flattenedActiveTimers).then(function (results) {
-                                var sum = 0;
-                                results.forEach(function (result) { return sum += result; });
-                                return sum;
-                            })];
+                        return [4, Promise.all(flattenedActiveTimerQueries)];
                     case 1:
                         kernelMs = _a.sent();
                         res = {
                             uploadWaitMs: this.uploadWaitMs,
                             downloadWaitMs: this.downloadWaitMs,
-                            kernelMs: kernelMs,
+                            kernelMs: util.sum(kernelMs),
+                            getExtraProfileInfo: function () {
+                                return kernelMs.map(function (d, i) { return ({ name: flattenedActiveTimerNames[i], ms: d }); })
+                                    .map(function (d) { return d.name + ": " + d.ms; })
+                                    .join(', ');
+                            },
                             wallMs: null
                         };
                         this.uploadWaitMs = 0;
@@ -5518,9 +6326,9 @@ var MathBackendWebGL = (function () {
             return;
         }
         if (this.texData.has(dataId)) {
-            var _a = this.texData.get(dataId), texture = _a.texture, texShape = _a.texShape, usage = _a.usage, complexTensors = _a.complexTensors;
+            var _a = this.texData.get(dataId), texture = _a.texture, texShape = _a.texShape, usage = _a.usage, complexTensors = _a.complexTensors, isPacked = _a.isPacked;
             if (texture != null) {
-                this.releaseTexture(dataId, texture, texShape, usage);
+                this.releaseTexture(dataId, texture, texShape, usage, isPacked);
             }
             if (complexTensors != null) {
                 complexTensors.real.dispose();
@@ -5533,6 +6341,22 @@ var MathBackendWebGL = (function () {
         this.uploadToGPU(dataId);
         return this.texData.get(dataId).texture;
     };
+    MathBackendWebGL.prototype.getCPUBackend = function () {
+        if (!environment_1.ENV.get('WEBGL_CPU_FORWARD')) {
+            return null;
+        }
+        if (this.cpuBackend == null) {
+            this.cpuBackend = environment_1.ENV.findBackend('cpu');
+        }
+        return this.cpuBackend;
+    };
+    MathBackendWebGL.prototype.shouldExecuteOnCPU = function (inputs, sizeThreshold) {
+        var _this = this;
+        if (sizeThreshold === void 0) { sizeThreshold = CPU_HANDOFF_SIZE_THRESHOLD; }
+        return this.getCPUBackend() != null &&
+            inputs.every(function (input) { return _this.texData.get(input.dataId).texture == null &&
+                input.size < sizeThreshold; });
+    };
     MathBackendWebGL.prototype.getGPGPUContext = function () {
         return this.gpgpu;
     };
@@ -5540,7 +6364,7 @@ var MathBackendWebGL = (function () {
         return this.canvas;
     };
     MathBackendWebGL.prototype.complex = function (real, imag) {
-        var result = tensor_1.Tensor.make(real.shape, {}, 'complex64');
+        var result = this.makeOutputArray(real.shape, 'complex64');
         var resultData = this.texData.get(result.dataId);
         resultData.complexTensors = {
             real: environment_1.ENV.engine.keep(real.clone()),
@@ -5557,11 +6381,17 @@ var MathBackendWebGL = (function () {
         return resultData.complexTensors.imag.clone();
     };
     MathBackendWebGL.prototype.slice = function (x, begin, size) {
+        if (this.shouldExecuteOnCPU([x])) {
+            return this.cpuBackend.slice(x, begin, size);
+        }
         var program = new slice_gpu_1.SliceProgram(size);
         var customSetup = program.getCustomSetupFunc(begin);
         return this.compileAndRun(program, [x], null, customSetup);
     };
     MathBackendWebGL.prototype.stridedSlice = function (x, begin, end, strides, beginMask, endMask, ellipsisMask, newAxisMask, shrinkAxisMask) {
+        if (this.shouldExecuteOnCPU([x])) {
+            return this.cpuBackend.stridedSlice(x, begin, end, strides, beginMask, endMask, ellipsisMask, newAxisMask, shrinkAxisMask);
+        }
         var _a = slice_util_1.getStridedSlicedInfo(x.shape, begin, end, strides, beginMask, endMask, ellipsisMask, newAxisMask, shrinkAxisMask), beginIndex = _a[0], size = _a[1], shrinkAxis = _a[2];
         var shape = size.filter(function (v, index) { return shrinkAxis.indexOf(index) === -1; });
         if (shape.some(function (axis) { return axis === 0; })) {
@@ -5583,6 +6413,9 @@ var MathBackendWebGL = (function () {
         return res.reshape(outShape);
     };
     MathBackendWebGL.prototype.concat = function (tensors, axis) {
+        if (this.shouldExecuteOnCPU(tensors)) {
+            return this.cpuBackend.concat(tensors, axis);
+        }
         if (tensors.length === 1) {
             return tensors[0];
         }
@@ -5597,8 +6430,36 @@ var MathBackendWebGL = (function () {
         return this.compileAndRun(program, [x]);
     };
     MathBackendWebGL.prototype.batchMatMul = function (a, b, transposeA, transposeB) {
-        var program = new mulmat_gpu_1.MatMulProgram(a.shape, b.shape, transposeA, transposeB);
-        return this.compileAndRun(program, [a, b]);
+        var outerShapeA = transposeA ? a.shape[2] : a.shape[1];
+        var outerShapeB = transposeB ? b.shape[1] : b.shape[2];
+        var sharedDim = transposeA ? a.shape[1] : a.shape[2];
+        var _a = a.shape, batch = _a[0];
+        if ((outerShapeA === 1 || outerShapeB === 1) &&
+            sharedDim > exports.MATMUL_SHARED_DIM_THRESHOLD) {
+            if (transposeA) {
+                a = a.transpose([0, 2, 1]);
+            }
+            if (transposeB) {
+                b = b.transpose([0, 2, 1]);
+            }
+            var a3D = outerShapeB === 1 ? a : a.as3D(batch, sharedDim, 1);
+            var axis = outerShapeB === 1 ? 2 : 1;
+            var b3D = outerShapeB === 1 ? b.as3D(batch, 1, sharedDim) : b;
+            return this.multiply(a3D, b3D).sum(axis, true);
+        }
+        if (batch === 1) {
+            var aSqueezed = a.as2D(a.shape[1], a.shape[2]);
+            var bSqueezed = b.as2D(b.shape[1], b.shape[2]);
+            var program = new mulmat_packed_gpu_1.MatMulPackedProgram(aSqueezed.shape, bSqueezed.shape, [outerShapeA, outerShapeB], transposeA, transposeB);
+            var result = this.compileAndRun(program, [aSqueezed, bSqueezed], this.makePackedTensor(program.outputShape));
+            if (environment_1.ENV.get('WEBGL_LAZILY_UNPACK') === false) {
+                result = this.unpackTensor(result);
+            }
+            return result.reshape([1, result.shape[0], result.shape[1]]);
+        }
+        else {
+            return this.compileAndRun(new mulmat_gpu_1.MatMulProgram(a.shape, b.shape, transposeA, transposeB), [a, b]);
+        }
     };
     MathBackendWebGL.prototype.multiply = function (a, b) {
         if (a.dtype === 'complex64') {
@@ -5619,6 +6480,9 @@ var MathBackendWebGL = (function () {
             imag.dispose();
             return complex;
         }
+        if (this.shouldExecuteOnCPU([a, b])) {
+            return this.cpuBackend.multiply(a, b);
+        }
         var program = new binaryop_gpu_1.BinaryOpProgram(binaryop_gpu.MUL, a.shape, b.shape);
         var output = this.makeOutputArray(program.outputShape, a.dtype);
         return this.compileAndRun(program, [a, b], output);
@@ -5635,8 +6499,14 @@ var MathBackendWebGL = (function () {
             scaleShape = scale.shape;
             inputs.push(scale);
         }
-        var program = new batchnorm_gpu_1.BatchNormProgram(x.shape, mean.shape, variance.shape, offsetShape, scaleShape, varianceEpsilon);
-        return this.compileAndRun(program, inputs);
+        var output = null;
+        var envSpecificBatchNormProgram = batchnorm_gpu_1.BatchNormProgram;
+        if (environment_1.ENV.get('WEBGL_PACK_BATCHNORMALIZATION')) {
+            output = this.makePackedTensor(x.shape);
+            envSpecificBatchNormProgram = batchnorm_packed_gpu_1.BatchNormPackedProgram;
+        }
+        var program = new envSpecificBatchNormProgram(x.shape, mean.shape, variance.shape, offsetShape, scaleShape, varianceEpsilon);
+        return this.compileAndRun(program, inputs, output);
     };
     MathBackendWebGL.prototype.localResponseNormalization4D = function (x, radius, bias, alpha, beta) {
         var program = new lrn_gpu_1.LRNProgram(x.shape, radius, bias, alpha, beta);
@@ -5736,6 +6606,13 @@ var MathBackendWebGL = (function () {
         var outputDType = types_1.sumOutType(x.dtype);
         return this.reduce(a2D, 'sum', outputDType).reshape(outShape);
     };
+    MathBackendWebGL.prototype.prod = function (x, axes) {
+        var _a = axis_util.computeOutAndReduceShapes(x.shape, axes), outShape = _a[0], reduceShape = _a[1];
+        var inSize = util.sizeFromShape(reduceShape);
+        var a2D = x.as2D(-1, inSize);
+        var outputDType = types_1.sumOutType(x.dtype);
+        return this.reduce(a2D, 'prod', outputDType).reshape(outShape);
+    };
     MathBackendWebGL.prototype.unsortedSegmentSum = function (x, segmentIds, numSegments) {
         var axis = 0;
         var permutation = axis_util.getAxesPermutation([axis], x.rank);
@@ -5805,6 +6682,9 @@ var MathBackendWebGL = (function () {
         return this.compileAndRun(program, [a, b], output);
     };
     MathBackendWebGL.prototype.less = function (a, b) {
+        if (this.shouldExecuteOnCPU([a, b])) {
+            return this.cpuBackend.less(a, b);
+        }
         var program = new binaryop_gpu_1.BinaryOpProgram(binaryop_gpu.LESS, a.shape, b.shape);
         var output = this.makeOutputArray(program.outputShape, 'bool');
         return this.compileAndRun(program, [a, b], output);
@@ -5815,6 +6695,9 @@ var MathBackendWebGL = (function () {
         return this.compileAndRun(program, [a, b], output);
     };
     MathBackendWebGL.prototype.greater = function (a, b) {
+        if (this.shouldExecuteOnCPU([a, b])) {
+            return this.cpuBackend.greater(a, b);
+        }
         var program = new binaryop_gpu_1.BinaryOpProgram(binaryop_gpu.GREATER, a.shape, b.shape);
         var output = this.makeOutputArray(program.outputShape, 'bool');
         return this.compileAndRun(program, [a, b], output);
@@ -5861,6 +6744,9 @@ var MathBackendWebGL = (function () {
         return this.reduce(a2D, 'min', a2D.dtype).reshape(outShape);
     };
     MathBackendWebGL.prototype.minimum = function (a, b) {
+        if (this.shouldExecuteOnCPU([a, b])) {
+            return this.cpuBackend.minimum(a, b);
+        }
         var program = new binaryop_gpu_1.BinaryOpProgram(binaryop_gpu.MIN, a.shape, b.shape);
         return this.compileAndRun(program, [a, b]);
     };
@@ -5877,6 +6763,9 @@ var MathBackendWebGL = (function () {
         return this.reduce(a2D, 'max', a2D.dtype).reshape(outShape);
     };
     MathBackendWebGL.prototype.maximum = function (a, b) {
+        if (this.shouldExecuteOnCPU([a, b])) {
+            return this.cpuBackend.maximum(a, b);
+        }
         var program = new binaryop_gpu_1.BinaryOpProgram(binaryop_gpu.MAX, a.shape, b.shape);
         return this.compileAndRun(program, [a, b]);
     };
@@ -5957,6 +6846,9 @@ var MathBackendWebGL = (function () {
     MathBackendWebGL.prototype.subtract = function (a, b) {
         if (a.dtype === 'complex64' && b.dtype === 'complex64') {
             return this.complexSeparableBinaryOp(a, b, binaryop_gpu.SUB);
+        }
+        if (this.shouldExecuteOnCPU([a, b])) {
+            return this.cpuBackend.subtract(a, b);
         }
         var program = new binaryop_gpu_1.BinaryOpProgram(binaryop_gpu.SUB, a.shape, b.shape);
         var output = this.makeOutputArray(program.outputShape, types_1.upcastType(a.dtype, b.dtype));
@@ -6046,6 +6938,15 @@ var MathBackendWebGL = (function () {
         var program = new unaryop_gpu_1.UnaryOpProgram(x.shape, unary_op.ABS);
         return this.compileAndRun(program, [x]);
     };
+    MathBackendWebGL.prototype.complexAbs = function (x) {
+        var xData = this.texData.get(x.dataId);
+        var program = new complex_abs_gpu_1.ComplexAbsProgram(x.shape);
+        var inputs = [
+            this.makeComplexComponentTensorHandle(x, xData.complexTensors.real),
+            this.makeComplexComponentTensorHandle(x, xData.complexTensors.imag),
+        ];
+        return this.compileAndRun(program, inputs);
+    };
     MathBackendWebGL.prototype.sigmoid = function (x) {
         var program = new unaryop_gpu_1.UnaryOpProgram(x.shape, unary_op.SIGMOID);
         return this.compileAndRun(program, [x]);
@@ -6116,7 +7017,26 @@ var MathBackendWebGL = (function () {
         var program = new unaryop_gpu_1.UnaryOpProgram(x.shape, unary_op.STEP(alpha));
         return this.compileAndRun(program, [x]);
     };
+    MathBackendWebGL.prototype.conv2dWithIm2Row = function (x, filter, convInfo) {
+        var filterWidth = convInfo.filterWidth, filterHeight = convInfo.filterHeight, inChannels = convInfo.inChannels, outWidth = convInfo.outWidth, outHeight = convInfo.outHeight;
+        var sharedDim = filterWidth * filterHeight * inChannels;
+        var numCols = outHeight * outWidth;
+        var x2ColShape = [sharedDim, numCols];
+        var xSqueezed = x.squeeze([0]);
+        var w2Row = filter.reshape([sharedDim, -1]);
+        var im2ColProgram = new im2col_gpu_1.Im2ColProgram(x2ColShape, xSqueezed.shape, convInfo);
+        var im2Col = this.compileAndRun(im2ColProgram, [xSqueezed], this.makePackedTensor(x2ColShape));
+        var matmulProgram = new mulmat_packed_gpu_1.MatMulPackedProgram(im2Col.shape, w2Row.shape, [numCols, convInfo.outChannels], true, false);
+        var product = this.compileAndRun(matmulProgram, [im2Col, w2Row], this.makePackedTensor(matmulProgram.outputShape));
+        if (environment_1.ENV.get('WEBGL_LAZILY_UNPACK') === false) {
+            product = this.unpackTensor(product);
+        }
+        return product.reshape([1, outHeight, outWidth, convInfo.outChannels]);
+    };
     MathBackendWebGL.prototype.conv2d = function (x, filter, convInfo) {
+        if (environment_1.ENV.get('WEBGL_CONV_IM2COL') && x.shape[0] === 1) {
+            return this.conv2dWithIm2Row(x, filter, convInfo);
+        }
         var program = new conv_gpu_1.Conv2DProgram(convInfo);
         return this.compileAndRun(program, [x, filter]);
     };
@@ -6169,6 +7089,10 @@ var MathBackendWebGL = (function () {
         return backend_util.castTensor(x, dtype, this);
     };
     MathBackendWebGL.prototype.reshape = function (x, shape) {
+        if (this.texData.get(x.dataId).isPacked &&
+            !webgl_util.isReshapeFree(x.shape, shape)) {
+            return this.packedReshape(x, shape);
+        }
         return backend_util.reshapeTensor(x, shape);
     };
     MathBackendWebGL.prototype.resizeBilinear = function (x, newHeight, newWidth, alignCorners) {
@@ -6229,14 +7153,97 @@ var MathBackendWebGL = (function () {
     MathBackendWebGL.prototype.split = function (x, sizeSplits, axis) {
         return split_shared_1.split(x, sizeSplits, axis);
     };
+    MathBackendWebGL.prototype.scatterND = function (indices, updates, shape) {
+        var _a = scatter_nd_util.calculateShapes(updates, indices, shape), sliceRank = _a.sliceRank, numUpdates = _a.numUpdates, sliceSize = _a.sliceSize, strides = _a.strides, outputSize = _a.outputSize;
+        var flattenShape = [outputSize / sliceSize, sliceSize];
+        var flattenIndices = indices.reshape([numUpdates, sliceRank]);
+        var flattenX = updates.reshape([numUpdates, sliceSize]);
+        if (outputSize === 0) {
+            return backend_util.reshapeTensor(tensor_ops_1.tensor([]), shape);
+        }
+        var defaultValue = tensor_ops_1.scalar(0);
+        var program = new scatter_gpu_1.ScatterProgram(numUpdates, sliceRank, flattenIndices.rank, flattenX.rank, strides, flattenShape);
+        return this.compileAndRun(program, [flattenX, flattenIndices, defaultValue])
+            .reshape(shape);
+    };
+    MathBackendWebGL.prototype.sparseToDense = function (sparseIndices, sparseValues, outputShape, defaultValue) {
+        var _a = scatter_nd_util.calculateShapes(sparseValues, sparseIndices, outputShape), sliceRank = _a.sliceRank, numUpdates = _a.numUpdates, strides = _a.strides, outputSize = _a.outputSize;
+        var sumDupeIndices = false;
+        var program = new scatter_gpu_1.ScatterProgram(numUpdates, sliceRank, sparseIndices.rank, sparseValues.rank, strides, [outputSize, 1], sumDupeIndices);
+        return this.compileAndRun(program, [sparseValues, sparseIndices, defaultValue])
+            .reshape(outputShape);
+    };
+    MathBackendWebGL.prototype.fft = function (x) {
+        var inverse = false;
+        return this.fftImpl(x, inverse);
+    };
+    MathBackendWebGL.prototype.ifft = function (x) {
+        var inverse = true;
+        return this.fftImpl(x, inverse);
+    };
+    MathBackendWebGL.prototype.fftImpl = function (x, inverse) {
+        var xData = this.texData.get(x.dataId);
+        var realProgram = new fft_gpu_1.FFTProgram(fft_gpu.COMPLEX_FFT.REAL, x.shape, inverse);
+        var imagProgram = new fft_gpu_1.FFTProgram(fft_gpu.COMPLEX_FFT.IMAG, x.shape, inverse);
+        var inputs = [
+            this.makeComplexComponentTensorHandle(x, xData.complexTensors.real),
+            this.makeComplexComponentTensorHandle(x, xData.complexTensors.imag),
+        ];
+        var real = this.compileAndRun(realProgram, inputs);
+        var imag = this.compileAndRun(imagProgram, inputs);
+        var complex = this.complex(real, imag).as2D(x.shape[0], x.shape[1]);
+        real.dispose();
+        imag.dispose();
+        return complex;
+    };
+    MathBackendWebGL.prototype.gatherND = function (x, indices) {
+        var indicesShape = indices.shape;
+        var sliceRank = indicesShape[indicesShape.length - 1];
+        var _a = gather_nd_util.prepareAndValidate(x, indices), resultShape = _a[0], numSlices = _a[1], sliceSize = _a[2], strides = _a[3];
+        var flattenIndices = indices.reshape([numSlices, sliceRank]);
+        var flattenX = x.reshape([x.size / sliceSize, sliceSize]);
+        var program = new gather_nd_gpu_1.GatherNDProgram(sliceRank, strides, [numSlices, sliceSize]);
+        return this.compileAndRun(program, [flattenX, flattenIndices])
+            .reshape(resultShape);
+    };
     MathBackendWebGL.prototype.makeOutputArray = function (shape, dtype) {
         return tensor_1.Tensor.make(shape, {}, dtype);
+    };
+    MathBackendWebGL.prototype.makePackedTensor = function (shape) {
+        var packedTensor = tensor_1.Tensor.make(shape, {});
+        this.texData.get(packedTensor.dataId).isPacked = true;
+        return packedTensor;
+    };
+    MathBackendWebGL.prototype.unpackTensor = function (input) {
+        var program = new unpack_gpu_1.UnpackProgram(input.shape);
+        return this.compileAndRun(program, [input]);
+    };
+    MathBackendWebGL.prototype.getBatchDim = function (shape, dimsToSkip) {
+        if (dimsToSkip === void 0) { dimsToSkip = 2; }
+        return util.sizeFromShape(shape.slice(0, shape.length - dimsToSkip));
+    };
+    MathBackendWebGL.prototype.getRowsCols = function (shape) {
+        if (shape.length === 0) {
+            throw Error('Cannot get rows and columns of an empty shape array.');
+        }
+        return [
+            shape.length > 1 ? shape[shape.length - 2] : 1, shape[shape.length - 1]
+        ];
+    };
+    MathBackendWebGL.prototype.packedReshape = function (input, afterShape) {
+        var inputAs3D = input.reshape([this.getBatchDim(input.shape)].concat(this.getRowsCols(input.shape)));
+        var afterShapeAs3D = [this.getBatchDim(afterShape)].concat(this.getRowsCols(afterShape));
+        var program = new reshape_packed_gpu_1.ReshapePackedProgram(afterShapeAs3D, inputAs3D.shape);
+        return this
+            .compileAndRun(program, [inputAs3D], this.makePackedTensor(afterShapeAs3D))
+            .reshape(afterShape);
     };
     MathBackendWebGL.prototype.compileAndRun = function (program, inputs, output, customSetup, pageToCpu) {
         var _this = this;
         if (pageToCpu === void 0) { pageToCpu = true; }
         if (output == null) {
-            output = this.makeOutputArray(program.outputShape, inputs[0].dtype);
+            output =
+                this.makeOutputArray(program.outputShape, inputs[0].dtype);
         }
         if (output.size === 0) {
             this.texData.get(output.dataId).values =
@@ -6251,13 +7258,29 @@ var MathBackendWebGL = (function () {
             }
             var texData = _this.texData.get(input.dataId);
             if (texData.texture == null &&
-                util.sizeFromShape(input.shape) <= exports.SIZE_UPLOAD_UNIFORM) {
+                !(!texData.isPacked && program.usesPackedTextures) &&
+                util.sizeFromShape(input.shape) <=
+                    environment_1.ENV.get('WEBGL_SIZE_UPLOAD_UNIFORM')) {
                 return {
                     shape: input.shape,
                     texData: null,
                     isUniform: true,
                     uniformValues: _this.readSync(input.dataId)
                 };
+            }
+            if (texData.isPacked !== !!program.usesPackedTextures) {
+                var preProcessProgram = void 0;
+                var processedInput = void 0;
+                if (texData.isPacked) {
+                    preProcessProgram = new unpack_gpu_1.UnpackProgram(input.shape);
+                    processedInput = _this.compileAndRun(preProcessProgram, [input]);
+                }
+                else {
+                    preProcessProgram = new pack_gpu_1.PackProgram(input.shape);
+                    processedInput = _this.compileAndRun(preProcessProgram, [input], _this.makePackedTensor(input.shape));
+                }
+                texData = _this.texData.get(processedInput.dataId);
+                input = processedInput;
             }
             _this.uploadToGPU(input.dataId);
             return { shape: input.shape, texData: texData, isUniform: false };
@@ -6278,7 +7301,8 @@ var MathBackendWebGL = (function () {
             query = this.startTimer();
         }
         gpgpu_math.runProgram(binary, inputsData, outputData, customSetup);
-        if (pageToCpu && this.numBytesInGPU > this.NUM_BYTES_BEFORE_PAGING) {
+        if (environment_1.ENV.get('WEBGL_PAGING_ENABLED') && pageToCpu &&
+            this.numBytesInGPU > this.NUM_BYTES_BEFORE_PAGING) {
             var numBytesToPage = this.numBytesInGPU - this.NUM_BYTES_BEFORE_PAGING;
             while (numBytesToPage > 0 && this.lruDataGPU.length > 0) {
                 var dataId = this.lruDataGPU.shift();
@@ -6289,7 +7313,7 @@ var MathBackendWebGL = (function () {
         }
         if (shouldTimeProgram) {
             query = this.endTimer(query);
-            this.activeTimers.push(this.getQueryTime(query));
+            this.activeTimers.push({ name: program.constructor.name, query: this.getQueryTime(query) });
         }
         return output;
     };
@@ -6311,8 +7335,8 @@ var MathBackendWebGL = (function () {
         }
         this.textureManager.dispose();
         this.canvas.remove();
-        if (this.fromPixelsCanvas != null) {
-            this.fromPixelsCanvas.remove();
+        if (this.fromPixels2DContext != null) {
+            this.fromPixels2DContext.canvas.remove();
         }
         if (this.gpgpuCreatedLocally) {
             this.gpgpu.dispose();
@@ -6328,22 +7352,16 @@ var MathBackendWebGL = (function () {
             return 16;
         });
     };
-    MathBackendWebGL.prototype.throwIfNoData = function (dataId) {
-        if (!this.texData.has(dataId)) {
-            throw new Error("WebGL backend: No data found for this tensor. " +
-                "Did you change your backend in the middle of the program? " +
-                "New backends can't use Tensors created with previous backends");
-        }
-    };
     MathBackendWebGL.prototype.uploadToGPU = function (dataId) {
-        this.throwIfNoData(dataId);
         var texData = this.texData.get(dataId);
-        var shape = texData.shape, values = texData.values, texture = texData.texture, dtype = texData.dtype, usage = texData.usage;
+        var shape = texData.shape, values = texData.values, texture = texData.texture, dtype = texData.dtype, usage = texData.usage, isPacked = texData.isPacked;
         if (texture != null) {
-            var index = this.lruDataGPU.indexOf(dataId);
-            if (index >= 0) {
-                this.lruDataGPU.splice(this.lruDataGPU.indexOf(dataId), 1);
-                this.lruDataGPU.push(dataId);
+            if (environment_1.ENV.get('WEBGL_PAGING_ENABLED')) {
+                var index = this.lruDataGPU.indexOf(dataId);
+                if (index >= 0) {
+                    this.lruDataGPU.splice(this.lruDataGPU.indexOf(dataId), 1);
+                    this.lruDataGPU.push(dataId);
+                }
             }
             return;
         }
@@ -6352,24 +7370,32 @@ var MathBackendWebGL = (function () {
         if (shouldTimeProgram) {
             start = performance.now();
         }
-        var texShape = webgl_util.getTextureShapeFromLogicalShape(this.gpgpu.gl, shape);
+        var texShape = webgl_util.getTextureShapeFromLogicalShape(shape, isPacked);
         texData.texShape = texShape;
-        var newTexture = this.acquireTexture(dataId, texShape, usage);
+        var newTexture = this.acquireTexture(dataId, texShape, usage, isPacked);
         texData.texture = newTexture;
         if (values != null) {
-            this.gpgpu.uploadMatrixToTexture(newTexture, texShape[0], texShape[1], typedArrayToFloat32(values, dtype));
+            if (isPacked) {
+                var batch = util.sizeFromShape(shape.slice(0, shape.length - 2));
+                var rows = shape.length > 1 ? shape[shape.length - 2] : 1;
+                var cols = shape[shape.length - 1];
+                this.gpgpu.uploadMatrixToPackedTexture(newTexture, batch, rows, cols, typedArrayToFloat32(values, dtype));
+            }
+            else {
+                this.gpgpu.uploadMatrixToTexture(newTexture, texShape[0], texShape[1], typedArrayToFloat32(values, dtype));
+            }
             texData.values = null;
             if (shouldTimeProgram) {
                 this.uploadWaitMs += performance.now() - start;
             }
         }
     };
-    MathBackendWebGL.prototype.cacheOnCPU = function (dataId, float32Values) {
+    MathBackendWebGL.prototype.convertAndCacheOnCPU = function (dataId, float32Values) {
         var dontKeepCopyOnGPU = this.delayedStorage;
         var texData = this.texData.get(dataId);
-        var texture = texData.texture, texShape = texData.texShape, dtype = texData.dtype, usage = texData.usage;
+        var texture = texData.texture, texShape = texData.texShape, dtype = texData.dtype, usage = texData.usage, isPacked = texData.isPacked;
         if (dontKeepCopyOnGPU && texture != null) {
-            this.releaseTexture(dataId, texture, texShape, usage);
+            this.releaseTexture(dataId, texture, texShape, usage, isPacked);
             texData.texture = null;
             texData.texShape = null;
         }
@@ -6377,21 +7403,26 @@ var MathBackendWebGL = (function () {
         if (float32Values != null) {
             texData.values = float32ToTypedArray(float32Values, dtype);
         }
+        return texData.values;
     };
-    MathBackendWebGL.prototype.releaseTexture = function (dataId, texture, texShape, texType) {
+    MathBackendWebGL.prototype.releaseTexture = function (dataId, texture, texShape, texType, isPacked) {
         var _a = this.texData.get(dataId), shape = _a.shape, dtype = _a.dtype;
-        var idx = this.lruDataGPU.indexOf(dataId);
-        if (idx >= 0) {
-            this.lruDataGPU.splice(idx, 1);
+        if (environment_1.ENV.get('WEBGL_PAGING_ENABLED')) {
+            var idx = this.lruDataGPU.indexOf(dataId);
+            if (idx >= 0) {
+                this.lruDataGPU.splice(idx, 1);
+            }
         }
         this.numBytesInGPU -= this.computeBytes(shape, dtype);
-        this.textureManager.releaseTexture(texture, texShape, texType);
+        this.textureManager.releaseTexture(texture, texShape, texType, isPacked);
     };
-    MathBackendWebGL.prototype.acquireTexture = function (dataId, texShape, texType) {
+    MathBackendWebGL.prototype.acquireTexture = function (dataId, texShape, texType, isPacked) {
         var _a = this.texData.get(dataId), shape = _a.shape, dtype = _a.dtype;
-        this.lruDataGPU.push(dataId);
+        if (environment_1.ENV.get('WEBGL_PAGING_ENABLED')) {
+            this.lruDataGPU.push(dataId);
+        }
         this.numBytesInGPU += this.computeBytes(shape, dtype);
-        return this.textureManager.acquireTexture(texShape, texType);
+        return this.textureManager.acquireTexture(texShape, texType, isPacked);
     };
     MathBackendWebGL.prototype.computeBytes = function (shape, dtype) {
         return util.sizeFromShape(shape) * util.bytesPerElement(dtype);
@@ -6422,7 +7453,7 @@ function typedArrayToFloat32(a, dtype) {
     return (a instanceof Float32Array) ? a : new Float32Array(a);
 }
 
-},{"../environment":4,"../globals":6,"../log":73,"../ops/array_ops_util":75,"../ops/axis_util":76,"../ops/concat_util":83,"../ops/reduce_util":100,"../ops/segment_util":105,"../ops/slice_util":108,"../ops/softmax":109,"../ops/tensor_ops":111,"../tensor":127,"../types":133,"../util":134,"./backend_util":21,"./complex_util":23,"./non_max_suppression_impl":24,"./split_shared":25,"./topk_impl":26,"./webgl/argminmax_gpu":27,"./webgl/avg_pool_backprop_gpu":28,"./webgl/batchnorm_gpu":29,"./webgl/binaryop_complex_gpu":30,"./webgl/binaryop_gpu":31,"./webgl/clip_gpu":32,"./webgl/concat_gpu":33,"./webgl/conv_backprop_gpu":34,"./webgl/conv_backprop_gpu_depthwise":35,"./webgl/conv_gpu":36,"./webgl/conv_gpu_depthwise":37,"./webgl/crop_and_resize_gpu":38,"./webgl/cumsum_gpu":39,"./webgl/depth_to_space_gpu":40,"./webgl/encode_float_gpu":41,"./webgl/from_pixels_gpu":42,"./webgl/gather_gpu":43,"./webgl/gpgpu_context":44,"./webgl/gpgpu_math":45,"./webgl/gpgpu_util":46,"./webgl/lrn_gpu":47,"./webgl/lrn_grad_gpu":48,"./webgl/max_pool_backprop_gpu":49,"./webgl/mulmat_gpu":50,"./webgl/multinomial_gpu":51,"./webgl/onehot_gpu":52,"./webgl/pad_gpu":53,"./webgl/pool_gpu":54,"./webgl/reduce_gpu":55,"./webgl/resize_bilinear_backprop_gpu":56,"./webgl/resize_bilinear_gpu":57,"./webgl/resize_nearest_neighbor_backprop_gpu":58,"./webgl/resize_nearest_neighbor_gpu":59,"./webgl/reverse_gpu":60,"./webgl/segment_gpu":61,"./webgl/select_gpu":62,"./webgl/slice_gpu":64,"./webgl/strided_slice_gpu":65,"./webgl/tex_util":66,"./webgl/texture_manager":67,"./webgl/tile_gpu":68,"./webgl/transpose_gpu":69,"./webgl/unaryop_gpu":70,"./webgl/webgl_util":71,"./where_impl":72}],23:[function(require,module,exports){
+},{"../canvas_util":2,"../environment":5,"../globals":7,"../log":87,"../ops/array_ops_util":90,"../ops/axis_util":91,"../ops/concat_util":98,"../ops/gather_nd_util":104,"../ops/reduce_util":118,"../ops/scatter_nd_util":123,"../ops/segment_util":125,"../ops/slice_util":128,"../ops/softmax":129,"../ops/tensor_ops":134,"../tensor":150,"../types":156,"../util":157,"./backend":21,"./backend_util":23,"./complex_util":25,"./non_max_suppression_impl":26,"./split_shared":28,"./topk_impl":29,"./webgl/argminmax_gpu":30,"./webgl/avg_pool_backprop_gpu":31,"./webgl/batchnorm_gpu":32,"./webgl/batchnorm_packed_gpu":33,"./webgl/binaryop_complex_gpu":34,"./webgl/binaryop_gpu":35,"./webgl/clip_gpu":36,"./webgl/complex_abs_gpu":37,"./webgl/concat_gpu":38,"./webgl/conv_backprop_gpu":39,"./webgl/conv_backprop_gpu_depthwise":40,"./webgl/conv_gpu":41,"./webgl/conv_gpu_depthwise":42,"./webgl/crop_and_resize_gpu":43,"./webgl/cumsum_gpu":44,"./webgl/depth_to_space_gpu":45,"./webgl/encode_float_gpu":46,"./webgl/fft_gpu":47,"./webgl/from_pixels_gpu":48,"./webgl/gather_gpu":49,"./webgl/gather_nd_gpu":50,"./webgl/gpgpu_context":51,"./webgl/gpgpu_math":52,"./webgl/im2col_gpu":54,"./webgl/lrn_gpu":55,"./webgl/lrn_grad_gpu":56,"./webgl/max_pool_backprop_gpu":57,"./webgl/mulmat_gpu":58,"./webgl/mulmat_packed_gpu":59,"./webgl/multinomial_gpu":60,"./webgl/onehot_gpu":61,"./webgl/pack_gpu":62,"./webgl/pad_gpu":63,"./webgl/pool_gpu":64,"./webgl/reduce_gpu":65,"./webgl/reshape_packed_gpu":66,"./webgl/resize_bilinear_backprop_gpu":67,"./webgl/resize_bilinear_gpu":68,"./webgl/resize_nearest_neighbor_backprop_gpu":69,"./webgl/resize_nearest_neighbor_gpu":70,"./webgl/reverse_gpu":71,"./webgl/scatter_gpu":72,"./webgl/segment_gpu":73,"./webgl/select_gpu":74,"./webgl/slice_gpu":77,"./webgl/strided_slice_gpu":78,"./webgl/tex_util":79,"./webgl/texture_manager":80,"./webgl/tile_gpu":81,"./webgl/transpose_gpu":82,"./webgl/unaryop_gpu":83,"./webgl/unpack_gpu":84,"./webgl/webgl_util":85,"./where_impl":86}],25:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function mergeRealAndImagArrays(real, imag) {
@@ -6448,8 +7479,59 @@ function splitRealAndImagArrays(complex) {
     return { real: real, imag: imag };
 }
 exports.splitRealAndImagArrays = splitRealAndImagArrays;
+function complexWithEvenIndex(complex) {
+    var len = Math.ceil(complex.length / 4);
+    var real = new Float32Array(len);
+    var imag = new Float32Array(len);
+    for (var i = 0; i < complex.length; i += 4) {
+        real[Math.floor(i / 4)] = complex[i];
+        imag[Math.floor(i / 4)] = complex[i + 1];
+    }
+    return { real: real, imag: imag };
+}
+exports.complexWithEvenIndex = complexWithEvenIndex;
+function complexWithOddIndex(complex) {
+    var len = Math.floor(complex.length / 4);
+    var real = new Float32Array(len);
+    var imag = new Float32Array(len);
+    for (var i = 2; i < complex.length; i += 4) {
+        real[Math.floor(i / 4)] = complex[i];
+        imag[Math.floor(i / 4)] = complex[i + 1];
+    }
+    return { real: real, imag: imag };
+}
+exports.complexWithOddIndex = complexWithOddIndex;
+function getComplexWithIndex(complex, index) {
+    var real = complex[index * 2];
+    var imag = complex[index * 2 + 1];
+    return { real: real, imag: imag };
+}
+exports.getComplexWithIndex = getComplexWithIndex;
+function assignToTypedArray(data, real, imag, index) {
+    data[index * 2] = real;
+    data[index * 2 + 1] = imag;
+}
+exports.assignToTypedArray = assignToTypedArray;
+function exponents(n, inverse) {
+    var real = new Float32Array(n / 2);
+    var imag = new Float32Array(n / 2);
+    for (var i = 0; i < Math.ceil(n / 2); i++) {
+        var x = (inverse ? 2 : -2) * Math.PI * (i / n);
+        real[i] = Math.cos(x);
+        imag[i] = Math.sin(x);
+    }
+    return { real: real, imag: imag };
+}
+exports.exponents = exponents;
+function exponent(k, n, inverse) {
+    var x = (inverse ? 2 : -2) * Math.PI * (k / n);
+    var real = Math.cos(x);
+    var imag = Math.sin(x);
+    return { real: real, imag: imag };
+}
+exports.exponent = exponent;
 
-},{}],24:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_ops_1 = require("../ops/tensor_ops");
@@ -6507,7 +7589,36 @@ function intersectionOverUnion(boxes, i, j) {
     return intersectionArea / (areaI + areaJ - intersectionArea);
 }
 
-},{"../ops/tensor_ops":111}],25:[function(require,module,exports){
+},{"../ops/tensor_ops":134}],27:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+function getVecChannels(name, rank) {
+    return ['x', 'y', 'z', 'w', 'u', 'v'].slice(0, rank).map(function (d) { return name + "." + d; });
+}
+exports.getVecChannels = getVecChannels;
+function getChannels(name, rank) {
+    if (rank === 1) {
+        return [name];
+    }
+    return getVecChannels(name, rank);
+}
+exports.getChannels = getChannels;
+function getSourceCoords(rank, dims) {
+    if (rank === 1) {
+        return 'rc';
+    }
+    var coords = '';
+    for (var i = 0; i < rank; i++) {
+        coords += dims[i];
+        if (i < rank - 1) {
+            coords += ',';
+        }
+    }
+    return coords;
+}
+exports.getSourceCoords = getSourceCoords;
+
+},{}],28:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function split(x, sizeSplits, axis) {
@@ -6522,7 +7633,7 @@ function split(x, sizeSplits, axis) {
 }
 exports.split = split;
 
-},{}],26:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_ops_1 = require("../ops/tensor_ops");
@@ -6557,7 +7668,7 @@ function topkImpl(x, xShape, xDtype, k, sorted) {
 }
 exports.topkImpl = topkImpl;
 
-},{"../ops/tensor_ops":111,"../util":134}],27:[function(require,module,exports){
+},{"../ops/tensor_ops":134,"../util":157}],30:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ArgMinMaxProgram = (function () {
@@ -6575,13 +7686,13 @@ var ArgMinMaxProgram = (function () {
         var indexSnippet = firstPass ?
             'inOffset + i;' :
             'round(getBestIndicesA(batch, inOffset + i));';
-        this.userCode = "\n      void main() {\n        ivec2 coords = getOutputCoords();\n        int batch = coords[0];\n        int outIdx = coords[1];\n        int inOffset = outIdx * " + windowSize + ";\n\n        int bestIndex = 0;\n        float bestValue = getA(batch, inOffset);\n\n        for (int i = 0; i < " + windowSize + "; i++) {\n          int inIdx = " + indexSnippet + ";\n          float candidate = getA(batch, inIdx);\n          if (candidate " + compOp + " bestValue) {\n            bestValue = candidate;\n            bestIndex = inIdx;\n          }\n        }\n        setOutput(float(bestIndex));\n      }\n    ";
+        this.userCode = "\n      void main() {\n        ivec2 coords = getOutputCoords();\n        int batch = coords[0];\n        int outIdx = coords[1];\n        int inOffset = outIdx * " + windowSize + ";\n\n        int bestIndex = inOffset;\n        float bestValue = getA(batch, bestIndex);\n\n        for (int i = 0; i < " + windowSize + "; i++) {\n          int inIdx = " + indexSnippet + ";\n          float candidate = getA(batch, inIdx);\n          if (candidate " + compOp + " bestValue) {\n            bestValue = candidate;\n            bestIndex = inIdx;\n          }\n        }\n        setOutput(float(bestIndex));\n      }\n    ";
     }
     return ArgMinMaxProgram;
 }());
 exports.ArgMinMaxProgram = ArgMinMaxProgram;
 
-},{}],28:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var AvgPool2DBackpropProgram = (function () {
@@ -6592,16 +7703,20 @@ var AvgPool2DBackpropProgram = (function () {
         var filterWidth = convInfo.filterWidth;
         var strideHeight = convInfo.strideHeight;
         var strideWidth = convInfo.strideWidth;
-        var padTop = filterHeight - 1 - convInfo.padInfo.top;
-        var padLeft = filterWidth - 1 - convInfo.padInfo.left;
+        var dilationHeight = convInfo.dilationHeight;
+        var dilationWidth = convInfo.dilationWidth;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
+        var padTop = effectiveFilterHeight - 1 - convInfo.padInfo.top;
+        var padLeft = effectiveFilterWidth - 1 - convInfo.padInfo.left;
         var avgMultiplier = 1 / (filterHeight * filterWidth);
-        this.userCode = "\n      const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n      const float avgMultiplier = float(" + avgMultiplier + ");\n\n      void main() {\n        ivec4 coords = getOutputCoords();\n        int b = coords[0];\n        int d = coords[3];\n\n        ivec2 dyRCCorner = coords.yz - pads;\n        int dyRCorner = dyRCCorner.x;\n        int dyCCorner = dyRCCorner.y;\n\n        // Convolve dy(?, ?, d) with pos mask(:, :, d) to get dx(xR, xC, d).\n        // ? = to be determined. : = across all values in that axis.\n        float dotProd = 0.0;\n        for (int wR = 0; wR < " + filterHeight + "; wR++) {\n          float dyR = float(dyRCorner + wR) / " + strideHeight + ".0;\n\n          if (dyR < 0.0 || dyR >= " + convInfo.outHeight + ".0 || fract(dyR) > 0.0) {\n            continue;\n          }\n          int idyR = int(dyR);\n\n          for (int wC = 0; wC < " + filterWidth + "; wC++) {\n            float dyC = float(dyCCorner + wC) / " + strideWidth + ".0;\n\n            if (dyC < 0.0 || dyC >= " + convInfo.outWidth + ".0 ||\n                fract(dyC) > 0.0) {\n              continue;\n            }\n            int idyC = int(dyC);\n\n            float dyValue = getDy(b, idyR, idyC, d);\n\n            dotProd += dyValue * avgMultiplier;\n          }\n        }\n        setOutput(dotProd);\n      }\n    ";
+        this.userCode = "\n      const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n      const float avgMultiplier = float(" + avgMultiplier + ");\n\n      void main() {\n        ivec4 coords = getOutputCoords();\n        int b = coords[0];\n        int d = coords[3];\n\n        ivec2 dyRCCorner = coords.yz - pads;\n        int dyRCorner = dyRCCorner.x;\n        int dyCCorner = dyRCCorner.y;\n\n        // Convolve dy(?, ?, d) with pos mask(:, :, d) to get dx(xR, xC, d).\n        // ? = to be determined. : = across all values in that axis.\n        float dotProd = 0.0;\n        for (int wR = 0; wR < " + effectiveFilterHeight + ";\n            wR += " + dilationHeight + ") {\n          float dyR = float(dyRCorner + wR) / " + strideHeight + ".0;\n\n          if (dyR < 0.0 || dyR >= " + convInfo.outHeight + ".0 || fract(dyR) > 0.0) {\n            continue;\n          }\n          int idyR = int(dyR);\n\n          for (int wC = 0; wC < " + effectiveFilterWidth + ";\n            wC+= " + dilationWidth + ") {\n            float dyC = float(dyCCorner + wC) / " + strideWidth + ".0;\n\n            if (dyC < 0.0 || dyC >= " + convInfo.outWidth + ".0 ||\n                fract(dyC) > 0.0) {\n              continue;\n            }\n            int idyC = int(dyC);\n\n            float dyValue = getDy(b, idyR, idyC, d);\n\n            dotProd += dyValue * avgMultiplier;\n          }\n        }\n        setOutput(dotProd);\n      }\n    ";
     }
     return AvgPool2DBackpropProgram;
 }());
 exports.AvgPool2DBackpropProgram = AvgPool2DBackpropProgram;
 
-},{}],29:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var broadcast_util = require("../../ops/broadcast_util");
@@ -6625,13 +7740,52 @@ var BatchNormProgram = (function () {
             scaleSnippet = 'getScaleAtOutCoords()';
         }
         this.outputShape = xShape;
-        this.userCode = "\n      void main() {\n        float x = getXAtOutCoords();\n        float mean = getMeanAtOutCoords();\n        float variance = getVarianceAtOutCoords();\n        float offset = " + offsetSnippet + ";\n        float scale = " + scaleSnippet + ";\n        float inv = scale * inversesqrt(variance + float(" + varianceEpsilon + "));\n        setOutput((x - mean) * inv + offset);\n      }\n    ";
+        this.userCode = "\n      void main() {\n        float x = getXAtOutCoords();\n        float mean = getMeanAtOutCoords();\n        float variance = getVarianceAtOutCoords();\n        float offset = " + offsetSnippet + ";\n        float scale = " + scaleSnippet + ";\n        float inv = scale * inversesqrt(variance + float(" + varianceEpsilon + "));\n        setOutput(dot(vec3(x, -mean, offset), vec3(inv, inv, 1)));\n      }\n    ";
     }
     return BatchNormProgram;
 }());
 exports.BatchNormProgram = BatchNormProgram;
 
-},{"../../ops/broadcast_util":79}],30:[function(require,module,exports){
+},{"../../ops/broadcast_util":94}],33:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var broadcast_util = require("../../ops/broadcast_util");
+var BatchNormPackedProgram = (function () {
+    function BatchNormPackedProgram(xShape, meanShape, varianceShape, offsetShape, scaleShape, varianceEpsilon) {
+        this.supportsBroadcasting = true;
+        this.usesPackedTextures = true;
+        this.variableNames = ['x', 'mean', 'variance'];
+        broadcast_util.assertAndGetBroadcastShape(xShape, meanShape);
+        broadcast_util.assertAndGetBroadcastShape(xShape, varianceShape);
+        var meanSnippet = broadcastSample('mean', meanShape.length);
+        var varianceSnippet = broadcastSample('variance', varianceShape.length);
+        var offsetSnippet = 'vec4 offset = vec4(0.0)';
+        if (offsetShape != null) {
+            broadcast_util.assertAndGetBroadcastShape(xShape, offsetShape);
+            this.variableNames.push('offset');
+            offsetSnippet = broadcastSample('offset', offsetShape.length);
+        }
+        var scaleSnippet = 'vec4 scale = vec4(1.0)';
+        if (scaleShape != null) {
+            broadcast_util.assertAndGetBroadcastShape(xShape, scaleShape);
+            this.variableNames.push('scale');
+            scaleSnippet = broadcastSample('scale', scaleShape.length);
+        }
+        this.outputShape = xShape;
+        this.userCode = "\n      void main() {\n        ivec4 rc = getOutputCoords();\n\n        " + offsetSnippet + ";\n        " + scaleSnippet + ";\n\n        vec4 x = getX(rc.x, rc.y, rc.z, rc.w);\n        " + meanSnippet + ";\n        " + varianceSnippet + ";\n\n        vec4 inv = scale * inversesqrt(variance + vec4(" + varianceEpsilon + "));\n\n        setOutput((x - mean) * inv + offset);\n      }\n    ";
+    }
+    return BatchNormPackedProgram;
+}());
+exports.BatchNormPackedProgram = BatchNormPackedProgram;
+function broadcastSample(texName, rank) {
+    var texSampler = "get" + texName.charAt(0).toUpperCase() + texName.slice(1);
+    if (rank === 1) {
+        return "\n      vec4 " + texName + "Sample = " + texSampler + "(rc.w);\n      vec4 " + texName + " = vec4(" + texName + "Sample.xy, " + texName + "Sample.xy);\n    ";
+    }
+    return "vec4 " + texName + " = " + texSampler + "(rc.x, rc.y, rc.z, rc.w)";
+}
+
+},{"../../ops/broadcast_util":94}],34:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var broadcast_util = require("../../ops/broadcast_util");
@@ -6651,7 +7805,7 @@ var BinaryOpComplexProgram = (function () {
 }());
 exports.BinaryOpComplexProgram = BinaryOpComplexProgram;
 
-},{"../../ops/broadcast_util":79}],31:[function(require,module,exports){
+},{"../../ops/broadcast_util":94}],35:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var broadcast_util = require("../../ops/broadcast_util");
@@ -6700,7 +7854,7 @@ var BinaryOpProgram = (function () {
 }());
 exports.BinaryOpProgram = BinaryOpProgram;
 
-},{"../../ops/broadcast_util":79}],32:[function(require,module,exports){
+},{"../../ops/broadcast_util":94}],36:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ClipProgram = (function () {
@@ -6713,7 +7867,20 @@ var ClipProgram = (function () {
 }());
 exports.ClipProgram = ClipProgram;
 
-},{}],33:[function(require,module,exports){
+},{}],37:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var ComplexAbsProgram = (function () {
+    function ComplexAbsProgram(shape) {
+        this.variableNames = ['real', 'imag'];
+        this.outputShape = shape;
+        this.userCode = "\n      void main() {\n        float real = getRealAtOutCoords();\n        float imag = getImagAtOutCoords();\n        vec2 v = vec2(real, imag);\n\n        setOutput(sqrt(dot(v, v)));\n      }\n    ";
+    }
+    return ComplexAbsProgram;
+}());
+exports.ComplexAbsProgram = ComplexAbsProgram;
+
+},{}],38:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var concat_util = require("../../ops/concat_util");
@@ -6729,7 +7896,7 @@ var ConcatProgram = (function () {
 }());
 exports.ConcatProgram = ConcatProgram;
 
-},{"../../ops/concat_util":83}],34:[function(require,module,exports){
+},{"../../ops/concat_util":98}],39:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Conv2DDerFilterProgram = (function () {
@@ -6761,7 +7928,7 @@ var Conv2DDerInputProgram = (function () {
 }());
 exports.Conv2DDerInputProgram = Conv2DDerInputProgram;
 
-},{}],35:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DepthwiseConv2DDerFilterProgram = (function () {
@@ -6795,7 +7962,7 @@ var DepthwiseConv2DDerInputProgram = (function () {
 }());
 exports.DepthwiseConv2DDerInputProgram = DepthwiseConv2DDerInputProgram;
 
-},{}],36:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Conv2DProgram = (function () {
@@ -6818,7 +7985,7 @@ var Conv2DProgram = (function () {
 }());
 exports.Conv2DProgram = Conv2DProgram;
 
-},{}],37:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DepthwiseConv2DProgram = (function () {
@@ -6842,7 +8009,7 @@ var DepthwiseConv2DProgram = (function () {
 }());
 exports.DepthwiseConv2DProgram = DepthwiseConv2DProgram;
 
-},{}],38:[function(require,module,exports){
+},{}],43:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var CropAndResizeProgram = (function () {
@@ -6883,7 +8050,7 @@ var CropAndResizeProgram = (function () {
 }());
 exports.CropAndResizeProgram = CropAndResizeProgram;
 
-},{}],39:[function(require,module,exports){
+},{}],44:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -6934,7 +8101,7 @@ function getFinalCoord(rank, name) {
     }
 }
 
-},{"./shader_compiler":63}],40:[function(require,module,exports){
+},{"./shader_compiler":75}],45:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DepthToSpaceProgram = (function () {
@@ -6990,7 +8157,7 @@ var DepthToSpaceProgram = (function () {
 }());
 exports.DepthToSpaceProgram = DepthToSpaceProgram;
 
-},{}],41:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var EncodeFloatProgram = (function () {
@@ -7003,7 +8170,27 @@ var EncodeFloatProgram = (function () {
 }());
 exports.EncodeFloatProgram = EncodeFloatProgram;
 
-},{}],42:[function(require,module,exports){
+},{}],47:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.COMPLEX_FFT = {
+    REAL: 'return real * expR - imag * expI;',
+    IMAG: 'return real * expI + imag * expR;'
+};
+var FFTProgram = (function () {
+    function FFTProgram(op, inputShape, inverse) {
+        this.variableNames = ['real', 'imag'];
+        var innerDim = inputShape[1];
+        this.outputShape = inputShape;
+        var exponentMultiplierSnippet = inverse ? "2.0 * " + Math.PI : "-2.0 * " + Math.PI;
+        var resultDenominator = inverse ? innerDim + ".0" : '1.0';
+        this.userCode = "\n      const float exponentMultiplier = " + exponentMultiplierSnippet + ";\n\n      float unaryOpComplex(float real, float expR, float imag, float expI) {\n        " + op + "\n      }\n\n      float mulMatDFT(int batch, int index) {\n        float indexRatio = float(index) / float(" + innerDim + ");\n        float exponentMultiplierTimesIndexRatio =\n            exponentMultiplier * indexRatio;\n\n        float result = 0.0;\n\n        for (int i = 0; i < " + innerDim + "; i++) {\n          // x = (-2|2 * PI / N) * index * i;\n          float x = exponentMultiplierTimesIndexRatio * float(i);\n          float expR = cos(x);\n          float expI = sin(x);\n          float real = getReal(batch, i);\n          float imag = getImag(batch, i);\n\n          result +=\n              unaryOpComplex(real, expR, imag, expI) / " + resultDenominator + ";\n        }\n\n        return result;\n      }\n\n      void main() {\n        ivec2 coords = getOutputCoords();\n        setOutput(mulMatDFT(coords[0], coords[1]));\n      }\n    ";
+    }
+    return FFTProgram;
+}());
+exports.FFTProgram = FFTProgram;
+
+},{}],48:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var FromPixelsProgram = (function () {
@@ -7017,7 +8204,7 @@ var FromPixelsProgram = (function () {
 }());
 exports.FromPixelsProgram = FromPixelsProgram;
 
-},{}],43:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -7056,7 +8243,26 @@ function getSourceCoords(aShape, axis) {
     return sourceCoords.join();
 }
 
-},{"./shader_compiler":63}],44:[function(require,module,exports){
+},{"./shader_compiler":75}],50:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var shader_compiler_1 = require("./shader_compiler");
+var GatherNDProgram = (function () {
+    function GatherNDProgram(sliceDim, strides, shape) {
+        this.sliceDim = sliceDim;
+        this.strides = strides;
+        this.variableNames = ['x', 'indices'];
+        this.outputShape = shape;
+        var stridesType = shader_compiler_1.getCoordsDataType(strides.length);
+        var dtype = shader_compiler_1.getCoordsDataType(shape.length);
+        var strideString = this.sliceDim > 1 ? 'strides[j]' : 'strides';
+        this.userCode = "\n        " + stridesType + " strides = " + stridesType + "(" + this.strides + ");\n         void main() {\n          " + dtype + " coords = getOutputCoords();\n          int flattenIndex = 0;\n          for (int j = 0; j < " + this.sliceDim + "; j++) {\n            int index = round(getIndices(coords[0], j));\n            flattenIndex += index * " + strideString + ";\n          }\n          setOutput(getX(flattenIndex, coords[1]));\n        }\n      ";
+    }
+    return GatherNDProgram;
+}());
+exports.GatherNDProgram = GatherNDProgram;
+
+},{"./shader_compiler":75}],51:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -7094,6 +8300,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
     }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+var canvas_util_1 = require("../../canvas_util");
 var environment_1 = require("../../environment");
 var util = require("../../util");
 var gpgpu_util = require("./gpgpu_util");
@@ -7111,7 +8318,7 @@ var GPGPUContext = (function () {
             this.gl = gl;
         }
         else {
-            this.gl = gpgpu_util.createWebGLContext();
+            this.gl = canvas_util_1.getWebGLContext(environment_1.ENV.get('WEBGL_VERSION'));
         }
         if (environment_1.ENV.get('WEBGL_VERSION') === 1) {
             this.textureFloatExtension =
@@ -7129,8 +8336,6 @@ var GPGPUContext = (function () {
             this.colorBufferFloatExtension =
                 webgl_util.getExtensionOrThrow(this.gl, 'EXT_color_buffer_float');
         }
-        this.loseContextExtension =
-            webgl_util.getExtensionOrThrow(this.gl, 'WEBGL_lose_context');
         this.vertexBuffer = gpgpu_util.createVertexBuffer(this.gl);
         this.indexBuffer = gpgpu_util.createIndexBuffer(this.gl);
         this.framebuffer = webgl_util.createFramebuffer(this.gl);
@@ -7158,10 +8363,8 @@ var GPGPUContext = (function () {
         webgl_util.callAndCheck(gl, function () { return gl.bindFramebuffer(gl.FRAMEBUFFER, null); });
         webgl_util.callAndCheck(gl, function () { return gl.deleteFramebuffer(_this.framebuffer); });
         webgl_util.callAndCheck(gl, function () { return gl.bindBuffer(gl.ARRAY_BUFFER, null); });
-        webgl_util.callAndCheck(gl, function () { return gl.deleteBuffer(_this.vertexBuffer); });
         webgl_util.callAndCheck(gl, function () { return gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null); });
         webgl_util.callAndCheck(gl, function () { return gl.deleteBuffer(_this.indexBuffer); });
-        this.loseContextExtension.loseContext();
         this.disposed = true;
     };
     GPGPUContext.prototype.enableAutomaticDebugValidation = function (enabled) {
@@ -7184,6 +8387,10 @@ var GPGPUContext = (function () {
         this.throwIfDisposed();
         gpgpu_util.uploadPixelDataToTexture(this.gl, texture, pixels);
     };
+    GPGPUContext.prototype.createFloat16PackedMatrixTexture = function (rows, columns) {
+        this.throwIfDisposed();
+        return gpgpu_util.createFloat16PackedMatrixTexture(this.gl, rows, columns, this.textureConfig);
+    };
     GPGPUContext.prototype.createPackedMatrixTexture = function (rows, columns) {
         this.throwIfDisposed();
         return gpgpu_util.createPackedMatrixTexture(this.gl, rows, columns, this.textureConfig);
@@ -7202,9 +8409,9 @@ var GPGPUContext = (function () {
         var numChannels = webgl_util.getNumChannels();
         return gpgpu_util.uploadMatrixToTexture(this.gl, texture, rows, columns, matrix, numChannels, this.textureConfig);
     };
-    GPGPUContext.prototype.uploadMatrixToPackedTexture = function (texture, rows, columns, matrix) {
+    GPGPUContext.prototype.uploadMatrixToPackedTexture = function (texture, batch, rows, columns, matrix) {
         this.throwIfDisposed();
-        return gpgpu_util.uploadMatrixToPackedTexture(this.gl, texture, rows, columns, matrix, this.textureConfig);
+        return gpgpu_util.uploadMatrixToPackedTexture(this.gl, texture, batch, rows, columns, matrix, this.textureConfig);
     };
     GPGPUContext.prototype.downloadFloat32MatrixFromOutputTexture = function (texture, rows, columns) {
         var _this = this;
@@ -7252,9 +8459,9 @@ var GPGPUContext = (function () {
         }
         return { query: query, isFencePassed: isFencePassed };
     };
-    GPGPUContext.prototype.downloadMatrixFromPackedTexture = function (texture, rows, columns) {
+    GPGPUContext.prototype.downloadMatrixFromPackedTexture = function (texture, batch, rows, columns, physicalRows, physicalCols) {
         var _this = this;
-        return this.downloadMatrixDriver(texture, function () { return gpgpu_util.downloadMatrixFromPackedOutputTexture(_this.gl, rows, columns, _this.textureConfig); });
+        return this.downloadMatrixDriver(texture, function () { return gpgpu_util.downloadMatrixFromPackedOutputTexture(_this.gl, batch, rows, columns, physicalRows, physicalCols, _this.textureConfig); });
     };
     GPGPUContext.prototype.createProgram = function (fragmentShaderSource) {
         this.throwIfDisposed();
@@ -7394,7 +8601,8 @@ var GPGPUContext = (function () {
             var _this = this;
             return __generator(this, function (_a) {
                 switch (_a.label) {
-                    case 0: return [4, util.repeatedTry(function () { return _this.isQueryAvailable(query, environment_1.ENV.get('WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_VERSION')); })];
+                    case 0: return [4, util.repeatedTry(function () { return _this.disposed ||
+                            _this.isQueryAvailable(query, environment_1.ENV.get('WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_VERSION')); })];
                     case 1:
                         _a.sent();
                         return [2, this.getQueryTime(query, environment_1.ENV.get('WEBGL_DISJOINT_QUERY_TIMER_EXTENSION_VERSION'))];
@@ -7536,7 +8744,7 @@ function binSearchLastTrue(arr) {
 }
 exports.binSearchLastTrue = binSearchLastTrue;
 
-},{"../../environment":4,"../../util":134,"./gpgpu_util":46,"./tex_util":66,"./webgl_util":71}],45:[function(require,module,exports){
+},{"../../canvas_util":2,"../../environment":5,"../../util":157,"./gpgpu_util":53,"./tex_util":79,"./webgl_util":85}],52:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../../util");
@@ -7547,7 +8755,8 @@ function compileProgram(gpgpu, program, inputs, output) {
         var shapeInfo = {
             logicalShape: input.shape,
             texShape: input.isUniform ? null : input.texData.texShape,
-            isUniform: input.isUniform
+            isUniform: input.isUniform,
+            isPacked: input.isUniform ? false : input.texData.isPacked
         };
         return { name: program.variableNames[i], shapeInfo: shapeInfo };
     });
@@ -7555,9 +8764,10 @@ function compileProgram(gpgpu, program, inputs, output) {
     var outShapeInfo = {
         logicalShape: output.shape,
         texShape: output.texData.texShape,
-        isUniform: false
+        isUniform: false,
+        isPacked: output.texData.isPacked
     };
-    var source = shader_compiler.makeShader(inputInfos, outShapeInfo, userCode, program.supportsBroadcasting === true);
+    var source = shader_compiler.makeShader(inputInfos, outShapeInfo, userCode, program.supportsBroadcasting === true, program.usesPackedTextures);
     var webGLProgram = gpgpu.createProgram(source);
     var uniformLocations = {};
     for (var i = 0; i < program.variableNames.length; i++) {
@@ -7607,7 +8817,12 @@ function runProgram(binary, inputs, output, customSetup) {
     var outTex = output.texData.texture;
     var outTexShape = output.texData.texShape;
     var gpgpu = binary.gpgpu;
-    gpgpu.setOutputMatrixTexture(outTex, outTexShape[0], outTexShape[1]);
+    if (output.texData.isPacked) {
+        gpgpu.setOutputPackedMatrixTexture(outTex, outTexShape[0], outTexShape[1]);
+    }
+    else {
+        gpgpu.setOutputMatrixTexture(outTex, outTexShape[0], outTexShape[1]);
+    }
     gpgpu.setProgram(binary.webGLProgram);
     inputs.forEach(function (input, i) {
         var variableName = binary.program.variableNames[i];
@@ -7649,45 +8864,13 @@ function makeShaderKey(program, inputs, output) {
 }
 exports.makeShaderKey = makeShaderKey;
 
-},{"../../util":134,"./shader_compiler":63}],46:[function(require,module,exports){
+},{"../../util":157,"./shader_compiler":75}],53:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../../environment");
+var util = require("../../util");
 var tex_util = require("./tex_util");
 var webgl_util = require("./webgl_util");
-function getWebGLContextAttributes() {
-    return {
-        alpha: false,
-        antialias: false,
-        premultipliedAlpha: false,
-        preserveDrawingBuffer: false,
-        depth: false,
-        stencil: false,
-        failIfMajorPerformanceCaveat: true
-    };
-}
-exports.getWebGLContextAttributes = getWebGLContextAttributes;
-function createWebGLContext(canvas) {
-    var attributes = getWebGLContextAttributes();
-    var gl;
-    if (canvas != null) {
-        gl = webgl_util.createWebGLRenderingContextFromCanvas(canvas, attributes);
-    }
-    else {
-        gl = webgl_util.createWebGLRenderingContext(attributes);
-    }
-    webgl_util.callAndCheck(gl, function () { return gl.disable(gl.DEPTH_TEST); });
-    webgl_util.callAndCheck(gl, function () { return gl.disable(gl.STENCIL_TEST); });
-    webgl_util.callAndCheck(gl, function () { return gl.disable(gl.BLEND); });
-    webgl_util.callAndCheck(gl, function () { return gl.disable(gl.DITHER); });
-    webgl_util.callAndCheck(gl, function () { return gl.disable(gl.POLYGON_OFFSET_FILL); });
-    webgl_util.callAndCheck(gl, function () { return gl.disable(gl.SAMPLE_COVERAGE); });
-    webgl_util.callAndCheck(gl, function () { return gl.enable(gl.SCISSOR_TEST); });
-    webgl_util.callAndCheck(gl, function () { return gl.enable(gl.CULL_FACE); });
-    webgl_util.callAndCheck(gl, function () { return gl.cullFace(gl.BACK); });
-    return gl;
-}
-exports.createWebGLContext = createWebGLContext;
 function createVertexShader(gl) {
     var vertexShaderSource = "\n    precision highp float;\n    attribute vec3 clipSpacePos;\n    attribute vec2 uv;\n    varying vec2 resultUV;\n\n    void main() {\n      gl_Position = vec4(clipSpacePos, 1);\n      resultUV = uv;\n    }";
     return webgl_util.createVertexShader(gl, vertexShaderSource);
@@ -7747,7 +8930,7 @@ function getTextureConfig(gl, textureHalfFloatExtension) {
 }
 exports.getTextureConfig = getTextureConfig;
 function createAndConfigureTexture(gl, width, height, internalFormat, textureFormat, textureType) {
-    webgl_util.validateTextureSize(gl, width, height);
+    webgl_util.validateTextureSize(width, height);
     var texture = webgl_util.createTexture(gl);
     var tex2d = gl.TEXTURE_2D;
     webgl_util.callAndCheck(gl, function () { return gl.bindTexture(tex2d, texture); });
@@ -7779,6 +8962,11 @@ function createPackedMatrixTexture(gl, rows, columns, textureConfig) {
     return createAndConfigureTexture(gl, width, height, textureConfig.internalFormatPackedFloat, gl.RGBA, gl.FLOAT);
 }
 exports.createPackedMatrixTexture = createPackedMatrixTexture;
+function createFloat16PackedMatrixTexture(gl, rows, columns, textureConfig) {
+    var _a = tex_util.getPackedMatrixTextureShapeWidthHeight(rows, columns), width = _a[0], height = _a[1];
+    return createAndConfigureTexture(gl, width, height, textureConfig.internalFormatHalfFloat, gl.RGBA, textureConfig.textureTypeHalfFloat);
+}
+exports.createFloat16PackedMatrixTexture = createFloat16PackedMatrixTexture;
 function bindVertexProgramAttributeStreams(gl, program, vertexBuffer) {
     var posOffset = 0;
     var uvOffset = 3 * 4;
@@ -7796,7 +8984,7 @@ function uploadPixelDataToTexture(gl, texture, pixels) {
 }
 exports.uploadPixelDataToTexture = uploadPixelDataToTexture;
 function uploadDataToTexture(gl, texture, width, height, data, textureFormat) {
-    webgl_util.validateTextureSize(gl, width, height);
+    webgl_util.validateTextureSize(width, height);
     webgl_util.callAndCheck(gl, function () { return gl.bindTexture(gl.TEXTURE_2D, texture); });
     webgl_util.callAndCheck(gl, function () { return gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, textureFormat, gl.FLOAT, data); });
     webgl_util.callAndCheck(gl, function () { return gl.bindTexture(gl.TEXTURE_2D, null); });
@@ -7815,10 +9003,10 @@ function uploadMatrixToTexture(gl, texture, rows, columns, matrix, numChannels, 
     uploadDataToTexture(gl, texture, w, h, unpackedArray, textureConfig.textureFormatFloat);
 }
 exports.uploadMatrixToTexture = uploadMatrixToTexture;
-function uploadMatrixToPackedTexture(gl, texture, rows, columns, matrix, textureConfig) {
+function uploadMatrixToPackedTexture(gl, texture, batch, rows, columns, matrix, textureConfig) {
     var _a = tex_util.getPackedMatrixTextureShapeWidthHeight(rows, columns), w = _a[0], h = _a[1];
     var packedRGBA = new Float32Array(tex_util.getPackedRGBAArraySizeFromMatrixShape(rows, columns));
-    tex_util.encodeMatrixToPackedRGBA(matrix, rows, columns, packedRGBA);
+    tex_util.encodeMatrixToPackedRGBA(matrix, batch, rows, columns, packedRGBA);
     uploadDataToTexture(gl, texture, w, h, packedRGBA, gl.RGBA);
 }
 exports.uploadMatrixToPackedTexture = uploadMatrixToPackedTexture;
@@ -7867,16 +9055,32 @@ function downloadByteEncodedFloatMatrixFromOutputTexture(gl, rows, columns, text
     return new Float32Array(downloadTarget.buffer);
 }
 exports.downloadByteEncodedFloatMatrixFromOutputTexture = downloadByteEncodedFloatMatrixFromOutputTexture;
-function downloadMatrixFromPackedOutputTexture(gl, rows, columns, textureConfig) {
-    var _a = tex_util.getPackedMatrixTextureShapeWidthHeight(rows, columns), w = _a[0], h = _a[1];
-    var packedRGBA = new Float32Array(tex_util.getPackedRGBAArraySizeFromMatrixShape(rows, columns));
+function downloadMatrixFromPackedOutputTexture(gl, batch, rows, cols, physicalRows, physicalCols, textureConfig) {
+    var _a = tex_util.getPackedMatrixTextureShapeWidthHeight(physicalRows, physicalCols), w = _a[0], h = _a[1];
+    var packedRGBA = new Float32Array(tex_util.getPackedRGBAArraySizeFromMatrixShape(physicalRows, physicalCols));
     webgl_util.callAndCheck(gl, function () { return gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, packedRGBA); });
-    var matrix = new Float32Array(rows * columns);
-    return tex_util.decodeMatrixFromPackedRGBA(packedRGBA, rows, columns, matrix);
+    var matrix = new Float32Array(util.sizeFromShape([batch, rows, cols]));
+    return tex_util.decodeMatrixFromPackedRGBA(packedRGBA, batch, rows, cols, matrix);
 }
 exports.downloadMatrixFromPackedOutputTexture = downloadMatrixFromPackedOutputTexture;
 
-},{"../../environment":4,"./tex_util":66,"./webgl_util":71}],47:[function(require,module,exports){
+},{"../../environment":5,"../../util":157,"./tex_util":79,"./webgl_util":85}],54:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var Im2ColProgram = (function () {
+    function Im2ColProgram(outputShape, inputShape, convInfo) {
+        this.variableNames = ['A'];
+        this.outputShape = outputShape;
+        var filterWidth = convInfo.filterWidth, inChannels = convInfo.inChannels, strideWidth = convInfo.strideWidth, strideHeight = convInfo.strideHeight, padInfo = convInfo.padInfo, outWidth = convInfo.outWidth, dilationWidth = convInfo.dilationWidth, dilationHeight = convInfo.dilationHeight;
+        var left = padInfo.left, top = padInfo.top;
+        var itemsPerBlockRow = inChannels * filterWidth;
+        this.userCode = "\n      void main() {\n        ivec2 rc = getOutputCoords();\n\n        vec4 result = vec4(0);\n\n        for(int row=0; row<=1; row++) {\n          for(int col=0; col<=1; col++) {\n            int blockIndex = rc.y + col;\n            int pos = rc.x + row;\n\n            if(blockIndex >= " + outputShape[1] + " || pos >= " + outputShape[0] + ") continue;\n\n            int offsetY = int(blockIndex / (" + outWidth + ")) * " + strideHeight + " - " + top + ";\n            int d0 = offsetY + " + dilationHeight + " * (pos / " + itemsPerBlockRow + ");\n\n            if(d0 >= " + inputShape[0] + " || d0 < 0) continue;\n\n            int offsetX = int(mod(float(blockIndex), " + outWidth + ".) * " + strideWidth + ". - " + left + ".);\n            int d1 = offsetX + " + dilationWidth + " * (int(mod(float(pos), " + itemsPerBlockRow + ".) / " + inChannels + ".));\n\n            if(d1 >= " + inputShape[1] + " || d1 < 0) continue;\n\n            result[row * 2 + col] = getA(d0, d1, int(mod(float(pos), " + inChannels + ".)));\n          }\n        }\n\n        gl_FragColor = result;\n      }\n    ";
+    }
+    return Im2ColProgram;
+}());
+exports.Im2ColProgram = Im2ColProgram;
+
+},{}],55:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var LRNProgram = (function () {
@@ -7903,7 +9107,7 @@ var LRNProgram = (function () {
 }());
 exports.LRNProgram = LRNProgram;
 
-},{}],48:[function(require,module,exports){
+},{}],56:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var LRNGradProgram = (function () {
@@ -7922,27 +9126,28 @@ var LRNGradProgram = (function () {
 }());
 exports.LRNGradProgram = LRNGradProgram;
 
-},{}],49:[function(require,module,exports){
+},{}],57:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MaxPool2DBackpropProgram = (function () {
     function MaxPool2DBackpropProgram(convInfo) {
         this.variableNames = ['dy', 'maxPos'];
         this.outputShape = convInfo.inShape;
-        var filterHeight = convInfo.filterHeight;
-        var filterWidth = convInfo.filterWidth;
         var strideHeight = convInfo.strideHeight;
         var strideWidth = convInfo.strideWidth;
-        var padTop = filterHeight - 1 - convInfo.padInfo.top;
-        var padLeft = filterWidth - 1 - convInfo.padInfo.left;
-        var lastIndex = filterHeight * filterWidth - 1;
-        this.userCode = "\n      const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n\n      void main() {\n        ivec4 coords = getOutputCoords();\n        int b = coords[0];\n        int d = coords[3];\n\n        ivec2 dyRCCorner = coords.yz - pads;\n        int dyRCorner = dyRCCorner.x;\n        int dyCCorner = dyRCCorner.y;\n\n        // Convolve dy(?, ?, d) with pos mask(:, :, d) to get dx(xR, xC, d).\n        // ? = to be determined. : = across all values in that axis.\n        float dotProd = 0.0;\n        for (int wR = 0; wR < " + filterHeight + "; wR++) {\n          float dyR = float(dyRCorner + wR) / " + strideHeight + ".0;\n\n          if (dyR < 0.0 || dyR >= " + convInfo.outHeight + ".0 || fract(dyR) > 0.0) {\n            continue;\n          }\n          int idyR = int(dyR);\n\n          for (int wC = 0; wC < " + filterWidth + "; wC++) {\n            float dyC = float(dyCCorner + wC) / " + strideWidth + ".0;\n\n            if (dyC < 0.0 || dyC >= " + convInfo.outWidth + ".0 ||\n                fract(dyC) > 0.0) {\n              continue;\n            }\n            int idyC = int(dyC);\n\n            float dyValue = getDy(b, idyR, idyC, d);\n            int maxPosValue = " + lastIndex + " - int(getMaxPos(b, idyR, idyC, d));\n\n            // Get the current value, check it against the value from the\n            // position matrix.\n            int curPosValue = wR * " + filterWidth + " + wC;\n            float mask = float(maxPosValue == curPosValue ? 1.0 : 0.0);\n\n            dotProd += dyValue * mask;\n          }\n        }\n        setOutput(dotProd);\n      }\n    ";
+        var dilationHeight = convInfo.dilationHeight;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
+        var padTop = effectiveFilterHeight - 1 - convInfo.padInfo.top;
+        var padLeft = effectiveFilterWidth - 1 - convInfo.padInfo.left;
+        var lastIndex = effectiveFilterHeight * effectiveFilterWidth - 1;
+        this.userCode = "\n      const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n\n      void main() {\n        ivec4 coords = getOutputCoords();\n        int b = coords[0];\n        int d = coords[3];\n\n        ivec2 dyRCCorner = coords.yz - pads;\n        int dyRCorner = dyRCCorner.x;\n        int dyCCorner = dyRCCorner.y;\n\n        // Convolve dy(?, ?, d) with pos mask(:, :, d) to get dx(xR, xC, d).\n        // ? = to be determined. : = across all values in that axis.\n        float dotProd = 0.0;\n        for (int wR = 0; wR < " + effectiveFilterHeight + ";\n          wR += " + dilationHeight + ") {\n          float dyR = float(dyRCorner + wR) / " + strideHeight + ".0;\n\n          if (dyR < 0.0 || dyR >= " + convInfo.outHeight + ".0 || fract(dyR) > 0.0) {\n            continue;\n          }\n          int idyR = int(dyR);\n\n          for (int wC = 0; wC < " + effectiveFilterWidth + "; wC++) {\n            float dyC = float(dyCCorner + wC) / " + strideWidth + ".0;\n\n            if (dyC < 0.0 || dyC >= " + convInfo.outWidth + ".0 ||\n                fract(dyC) > 0.0) {\n              continue;\n            }\n            int idyC = int(dyC);\n\n            float dyValue = getDy(b, idyR, idyC, d);\n            int maxPosValue = " + lastIndex + " - int(getMaxPos(b, idyR, idyC, d));\n\n            // Get the current value, check it against the value from the\n            // position matrix.\n            int curPosValue = wR * " + effectiveFilterWidth + " + wC;\n            float mask = float(maxPosValue == curPosValue ? 1.0 : 0.0);\n\n            dotProd += dyValue * mask;\n          }\n        }\n        setOutput(dotProd);\n      }\n    ";
     }
     return MaxPool2DBackpropProgram;
 }());
 exports.MaxPool2DBackpropProgram = MaxPool2DBackpropProgram;
 
-},{}],50:[function(require,module,exports){
+},{}],58:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MatMulProgram = (function () {
@@ -7971,7 +9176,29 @@ var MatMulProgram = (function () {
 }());
 exports.MatMulProgram = MatMulProgram;
 
-},{}],51:[function(require,module,exports){
+},{}],59:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var MatMulPackedProgram = (function () {
+    function MatMulPackedProgram(aShape, bShape, outputShape, transposeA, transposeB) {
+        if (transposeA === void 0) { transposeA = false; }
+        if (transposeB === void 0) { transposeB = false; }
+        this.variableNames = ['matrixA', 'matrixB'];
+        this.usesPackedTextures = true;
+        this.outputShape = outputShape;
+        var sharedDim = transposeA ? aShape[0] : aShape[1];
+        var sharedDimensionPacked = Math.ceil(sharedDim / 2);
+        var aSample = transposeA ? 'i * 2, rc.x' : 'rc.x, i * 2';
+        var bSample = transposeB ? 'rc.y, i * 2' : 'i * 2, rc.y';
+        var aSwizzle = transposeA ? ['a.xxyy', 'a.zzww'] : ['a.xxzz', 'a.yyww'];
+        var bSwizzle = transposeB ? ['b.xzxz', 'b.ywyw'] : ['b.xyxy', 'b.zwzw'];
+        this.userCode = "\n      const float sharedDimension = " + sharedDimensionPacked + ".0;\n\n      vec4 dot2x2ARowBCol(ivec2 rc) {\n        vec4 result = vec4(0);\n        for (int i = 0; i < " + sharedDimensionPacked + "; i++) {\n          vec4 a = getMatrixA(" + aSample + ");\n          vec4 b = getMatrixB(" + bSample + ");\n\n          result += (" + aSwizzle[0] + " * " + bSwizzle[0] + ") + (" + aSwizzle[1] + " * " + bSwizzle[1] + ");\n        }\n        return result;\n      }\n\n      void main() {\n        ivec2 rc = getOutputCoords();\n        setOutput(dot2x2ARowBCol(rc));\n      }\n    ";
+    }
+    return MatMulPackedProgram;
+}());
+exports.MatMulPackedProgram = MatMulPackedProgram;
+
+},{}],60:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var MultinomialProgram = (function () {
@@ -7993,7 +9220,7 @@ var MultinomialProgram = (function () {
 }());
 exports.MultinomialProgram = MultinomialProgram;
 
-},{}],52:[function(require,module,exports){
+},{}],61:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var OneHotProgram = (function () {
@@ -8006,7 +9233,69 @@ var OneHotProgram = (function () {
 }());
 exports.OneHotProgram = OneHotProgram;
 
-},{}],53:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var packing_util_1 = require("../packing_util");
+var shader_compiler_1 = require("./shader_compiler");
+var PackProgram = (function () {
+    function PackProgram(outputShape) {
+        this.variableNames = ['A'];
+        this.outputShape = outputShape;
+        var rank = outputShape.length;
+        var channels = packing_util_1.getChannels('rc', rank);
+        var dtype = shader_compiler_1.getCoordsDataType(rank);
+        var outOfBoundsCondition = getOutOfBoundsCondition(rank, outputShape, channels);
+        var setup = getSetup(rank, outputShape[outputShape.length - 1], outputShape[outputShape.length - 2], channels);
+        var output = getOutput(outputShape, channels);
+        this.userCode = "\n      void main() {\n        " + dtype + " rc = getOutputCoords();\n\n        if(" + outOfBoundsCondition + ") {\n          gl_FragColor = vec4(0);\n        } else {\n          " + setup + "\n\n          setOutput(vec4(" + output + "));\n        }\n      }\n    ";
+    }
+    return PackProgram;
+}());
+exports.PackProgram = PackProgram;
+function getSourceCoordsArr(rank, dims) {
+    var coords = [];
+    for (var row = 0; row <= 1; row++) {
+        for (var col = 0; col <= 1; col++) {
+            var coord = (row === 0 ? 'r' : 'rp1') + ", " + (col === 0 ? 'c' : 'cp1');
+            for (var d = 2; d < rank; d++) {
+                coord = dims[dims.length - 1 - d] + "," + coord;
+            }
+            coords.push(coord);
+        }
+    }
+    return coords;
+}
+function getOutOfBoundsCondition(rank, shape, dims) {
+    if (rank === 1) {
+        return "rc > " + shape[0];
+    }
+    var cond = '';
+    for (var i = rank - 2; i < rank; i++) {
+        cond += dims[i] + " >= " + shape[i];
+        if (i < rank - 1) {
+            cond += '||';
+        }
+    }
+    return cond;
+}
+function getSetup(rank, cols, rows, dims) {
+    if (rank === 1) {
+        return '';
+    }
+    var innerDims = dims.slice(-2);
+    return "\n    int r = " + innerDims[0] + ";\n    int c = " + innerDims[1] + ";\n    int rp1 = r + 1;\n    int cp1 = c + 1;\n\n    bool cEdge = cp1 >= " + cols + ";\n    bool rEdge = rp1 >= " + rows + ";\n  ";
+}
+function getOutput(shape, dims) {
+    var rank = shape.length;
+    var sourceCoords = getSourceCoordsArr(rank, dims);
+    if (rank === 1) {
+        return "getA(rc),\n            rc + 1 >= " + shape[0] + " ? 0. : getA(rc + 1),\n            0, 0";
+    }
+    return "getA(" + sourceCoords[0] + "),\n          cEdge ? 0. : getA(" + sourceCoords[1] + "),\n          rEdge ? 0. : getA(" + sourceCoords[2] + "),\n          rEdge || cEdge ? 0. : getA(" + sourceCoords[3] + ")";
+}
+
+},{"../packing_util":27,"./shader_compiler":75}],63:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -8029,7 +9318,7 @@ var PadProgram = (function () {
 }());
 exports.PadProgram = PadProgram;
 
-},{"./shader_compiler":63}],54:[function(require,module,exports){
+},{"./shader_compiler":75}],64:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var Pool2DProgram = (function () {
@@ -8038,10 +9327,13 @@ var Pool2DProgram = (function () {
         if (poolType === 'avg' && computePositions) {
             throw new Error('Cannot compute positions for average pool.');
         }
-        var filterHeight = convInfo.filterHeight;
         var filterWidth = convInfo.filterWidth;
         var strideHeight = convInfo.strideHeight;
         var strideWidth = convInfo.strideWidth;
+        var dilationHeight = convInfo.dilationHeight;
+        var dilationWidth = convInfo.dilationWidth;
+        var effectiveFilterHeight = convInfo.effectiveFilterHeight;
+        var effectiveFilterWidth = convInfo.effectiveFilterWidth;
         var padTop = convInfo.padInfo.top;
         var padLeft = convInfo.padInfo.left;
         this.outputShape = convInfo.outShape;
@@ -8052,7 +9344,7 @@ var Pool2DProgram = (function () {
         }
         if (computePositions) {
             var compareOp_1 = '>=';
-            this.userCode = "\n        const ivec2 strides = ivec2(" + strideHeight + ", " + strideWidth + ");\n        const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n\n        void main() {\n          ivec4 coords = getOutputCoords();\n          int batch = coords[0];\n          int d = coords[3];\n\n          ivec2 xRCCorner = coords.yz * strides - pads;\n          int xRCorner = xRCCorner.x;\n          int xCCorner = xRCCorner.y;\n\n          // max/min x(?, ?, d) to get y(yR, yC, d).\n          // ? = to be determined\n          float minMaxValue = 0.0;\n          float minMaxValueFound = 0.0;\n          int minMaxPosition = 0;\n          float avgValue = 0.0;\n\n          for (int wR = 0; wR < " + filterHeight + "; wR++) {\n            int xR = xRCorner + wR;\n\n            if (xR < 0 || xR >= " + convInfo.inHeight + ") {\n              continue;\n            }\n\n            for (int wC = 0; wC < " + filterWidth + "; wC++) {\n              int xC = xCCorner + wC;\n\n              if (xC < 0 || xC >= " + convInfo.inWidth + ") {\n                continue;\n              }\n\n              float value = getX(batch, xR, xC, d);\n\n              // If a min / max value has already been found, use it. If not,\n              // use the current value.\n              float currMinMaxValue = mix(\n                  value, minMaxValue, minMaxValueFound);\n              if (value " + compareOp_1 + " currMinMaxValue) {\n                minMaxValue = value;\n                minMaxValueFound = 1.0;\n                minMaxPosition = wR * " + filterWidth + " + wC;\n              }\n            }\n          }\n          setOutput(float(minMaxPosition));\n        }\n      ";
+            this.userCode = "\n        const ivec2 strides = ivec2(" + strideHeight + ", " + strideWidth + ");\n        const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n\n        void main() {\n          ivec4 coords = getOutputCoords();\n          int batch = coords[0];\n          int d = coords[3];\n\n          ivec2 xRCCorner = coords.yz * strides - pads;\n          int xRCorner = xRCCorner.x;\n          int xCCorner = xRCCorner.y;\n\n          // max/min x(?, ?, d) to get y(yR, yC, d).\n          // ? = to be determined\n          float minMaxValue = 0.0;\n          float minMaxValueFound = 0.0;\n          int minMaxPosition = 0;\n          float avgValue = 0.0;\n\n          for (int wR = 0; wR < " + effectiveFilterHeight + ";\n              wR += " + dilationHeight + ") {\n            int xR = xRCorner + wR;\n\n            if (xR < 0 || xR >= " + convInfo.inHeight + ") {\n              continue;\n            }\n\n            for (int wC = 0; wC < " + effectiveFilterWidth + ";\n                wC += " + dilationWidth + ") {\n              int xC = xCCorner + wC;\n\n              if (xC < 0 || xC >= " + convInfo.inWidth + ") {\n                continue;\n              }\n\n              float value = getX(batch, xR, xC, d);\n\n              // If a min / max value has already been found, use it. If not,\n              // use the current value.\n              float currMinMaxValue = mix(\n                  value, minMaxValue, minMaxValueFound);\n              if (value " + compareOp_1 + " currMinMaxValue) {\n                minMaxValue = value;\n                minMaxValueFound = 1.0;\n                minMaxPosition = wR * " + effectiveFilterWidth + " + wC;\n              }\n            }\n          }\n          setOutput(float(minMaxPosition));\n        }\n      ";
             return;
         }
         var compareOp = 'max';
@@ -8064,13 +9356,13 @@ var Pool2DProgram = (function () {
         var filterWidthNearestVec4 = Math.floor(filterWidth / 4) * 4;
         var filterWidthVec4Remainder = filterWidth % 4;
         var updateSnippet = "\n      if (" + isAvgPool + ") {\n        avgValue += dot(values, ones);\n      } else {\n        minMaxValue = " + compareOp + "(values, minMaxValue);\n      }\n    ";
-        this.userCode = "\n      const ivec2 strides = ivec2(" + strideHeight + ", " + strideWidth + ");\n      const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n      const float initializationValue = " + initializationValue + ";\n      const vec4 ones = vec4(1.0, 1.0, 1.0, 1.0);\n\n      float count = 0.0;\n\n      float getValue(int batch, int xR, int xC, int d) {\n        if (xC < 0 || xC >= " + convInfo.inWidth + ") {\n          return initializationValue;\n        }\n        count += 1.0;\n        return getX(batch, xR, xC, d);\n      }\n\n      void main() {\n        ivec4 coords = getOutputCoords();\n        int batch = coords[0];\n        int d = coords[3];\n\n        ivec2 xRCCorner = coords.yz * strides - pads;\n        int xRCorner = xRCCorner.x;\n        int xCCorner = xRCCorner.y;\n\n        // max/min x(?, ?, d) to get y(yR, yC, d).\n        // ? = to be determined\n        vec4 minMaxValue = vec4(" + initializationValue + ");\n        float avgValue = 0.0;\n        count = 0.0;\n\n        for (int wR = 0; wR < " + filterHeight + "; wR++) {\n          int xR = xRCorner + wR;\n\n          if (xR < 0 || xR >= " + convInfo.inHeight + ") {\n            continue;\n          }\n\n          for (int wC = 0; wC < " + filterWidthNearestVec4 + "; wC += 4) {\n            int xC = xCCorner + wC;\n\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              getValue(batch, xR, xC + 1, d),\n              getValue(batch, xR, xC + 2, d),\n              getValue(batch, xR, xC + 3, d)\n            );\n\n            " + updateSnippet + "\n          }\n\n          int xC = xCCorner + " + filterWidthNearestVec4 + ";\n          if (" + (filterWidthVec4Remainder === 1) + ") {\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              initializationValue,\n              initializationValue,\n              initializationValue\n            );\n\n            " + updateSnippet + "\n          } else if (" + (filterWidthVec4Remainder === 2) + ") {\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              getValue(batch, xR, xC + 1, d),\n              initializationValue,\n              initializationValue\n            );\n\n            " + updateSnippet + "\n          } else if (" + (filterWidthVec4Remainder === 3) + ") {\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              getValue(batch, xR, xC + 1, d),\n              getValue(batch, xR, xC + 2, d),\n              initializationValue\n            );\n\n            " + updateSnippet + "\n          }\n        }\n        setOutput(" + returnValue + ");\n      }\n    ";
+        this.userCode = "\n      const ivec2 strides = ivec2(" + strideHeight + ", " + strideWidth + ");\n      const ivec2 pads = ivec2(" + padTop + ", " + padLeft + ");\n      const float initializationValue = " + initializationValue + ";\n      const vec4 ones = vec4(1.0, 1.0, 1.0, 1.0);\n\n      float count = 0.0;\n\n      float getValue(int batch, int xR, int xC, int d) {\n        if (xC < 0 || xC >= " + convInfo.inWidth + ") {\n          return initializationValue;\n        }\n        count += 1.0;\n        return getX(batch, xR, xC, d);\n      }\n\n      void main() {\n        ivec4 coords = getOutputCoords();\n        int batch = coords[0];\n        int d = coords[3];\n\n        ivec2 xRCCorner = coords.yz * strides - pads;\n        int xRCorner = xRCCorner.x;\n        int xCCorner = xRCCorner.y;\n\n        // max/min x(?, ?, d) to get y(yR, yC, d).\n        // ? = to be determined\n        vec4 minMaxValue = vec4(" + initializationValue + ");\n        float avgValue = 0.0;\n        count = 0.0;\n\n        for (int wR = 0; wR < " + effectiveFilterHeight + ";\n            wR += " + dilationHeight + ") {\n          int xR = xRCorner + wR;\n\n          if (xR < 0 || xR >= " + convInfo.inHeight + ") {\n            continue;\n          }\n\n          for (int wC = 0; wC < " + filterWidthNearestVec4 + "; wC += 4) {\n            int xC = xCCorner + wC * " + dilationWidth + ";\n\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              getValue(batch, xR, xC + " + dilationWidth + ", d),\n              getValue(batch, xR, xC + 2 * " + dilationWidth + ", d),\n              getValue(batch, xR, xC + 3 * " + dilationWidth + ", d)\n            );\n\n            " + updateSnippet + "\n          }\n\n          int xC = xCCorner + " + filterWidthNearestVec4 + ";\n          if (" + (filterWidthVec4Remainder === 1) + ") {\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              initializationValue,\n              initializationValue,\n              initializationValue\n            );\n\n            " + updateSnippet + "\n          } else if (" + (filterWidthVec4Remainder === 2) + ") {\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              getValue(batch, xR, xC + " + dilationWidth + ", d),\n              initializationValue,\n              initializationValue\n            );\n\n            " + updateSnippet + "\n          } else if (" + (filterWidthVec4Remainder === 3) + ") {\n            vec4 values = vec4(\n              getValue(batch, xR, xC, d),\n              getValue(batch, xR, xC + " + dilationWidth + ", d),\n              getValue(batch, xR, xC + 2 * " + dilationWidth + ", d),\n              initializationValue\n            );\n\n            " + updateSnippet + "\n          }\n        }\n        setOutput(" + returnValue + ");\n      }\n    ";
     }
     return Pool2DProgram;
 }());
 exports.Pool2DProgram = Pool2DProgram;
 
-},{}],55:[function(require,module,exports){
+},{}],65:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ReduceProgram = (function () {
@@ -8083,7 +9375,10 @@ var ReduceProgram = (function () {
         this.outputShape = [batchSize, outSize];
         var initializationValue = '0.0';
         var compareOp = "";
-        if (reduceType === 'min') {
+        if (reduceType === 'prod') {
+            initializationValue = '1.0';
+        }
+        else if (reduceType === 'min') {
             initializationValue = '1.0 / 0.0';
             compareOp = "min";
         }
@@ -8096,6 +9391,9 @@ var ReduceProgram = (function () {
         if (reduceType === 'sum') {
             returnValue = "sumValue";
         }
+        else if (reduceType === 'prod') {
+            returnValue = "prodValue";
+        }
         else if (reduceType === 'all') {
             returnValue = "allValue";
         }
@@ -8104,7 +9402,7 @@ var ReduceProgram = (function () {
         }
         var windowSizeNearestVec4 = Math.floor(windowSize / 4) * 4;
         var windowSizeVec4Remainder = windowSize % 4;
-        var updateSnippet = "\n      if (" + (reduceType === 'sum') + ") {\n        sumValue += dot(values, ones);\n      } else {\n        minMaxValue = " + compareOp + "(values, minMaxValue);\n      }\n    ";
+        var updateSnippet = "\n      if (" + (reduceType === 'sum') + ") {\n        sumValue += dot(values, ones);\n      } else if (" + (reduceType === 'prod') + ") {\n        vec2 tmp = vec2(values[0], values[1]) * vec2(values[2], values[3]);\n        prodValue *= tmp[0] * tmp[1];\n      } else {\n        minMaxValue = " + compareOp + "(values, minMaxValue);\n      }\n    ";
         var vecType = "vec4";
         if (reduceType === 'all') {
             initializationValue = '1.0';
@@ -8120,13 +9418,48 @@ var ReduceProgram = (function () {
         if (inSize % windowSize > 0) {
             checkOutOfBounds = "\n        if (inIdx < 0 || inIdx >= " + inSize + ") {\n          return initializationValue;\n        }\n      ";
         }
-        this.userCode = "\n      const float initializationValue = " + initializationValue + ";\n      const vec4 ones = vec4(1.0, 1.0, 1.0, 1.0);\n\n      float getValue(int batch, int inIdx) {\n        " + checkOutOfBounds + "\n        return getX(batch, inIdx);\n      }\n\n      void main() {\n        ivec2 coords = getOutputCoords();\n        int batch = coords[0];\n        int outIdx = coords[1];\n        int inOffset = outIdx * " + windowSize + ";\n\n        vec4 minMaxValue = vec4(" + initializationValue + ");\n        float sumValue = 0.0;\n        float allValue = 1.0;\n        float anyValue = 0.0;\n\n        for (int i = 0; i < " + windowSizeNearestVec4 + "; i += 4) {\n          int inIdx = inOffset + i;\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            getValue(batch, inIdx + 1),\n            getValue(batch, inIdx + 2),\n            getValue(batch, inIdx + 3)\n          );\n\n          " + updateSnippet + "\n        }\n\n        int inIdx = inOffset + " + windowSizeNearestVec4 + ";\n        if (" + (windowSizeVec4Remainder === 1) + ") {\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            initializationValue,\n            initializationValue,\n            initializationValue\n          );\n\n          " + updateSnippet + "\n        } else if (" + (windowSizeVec4Remainder === 2) + ") {\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            getValue(batch, inIdx + 1),\n            initializationValue,\n            initializationValue\n          );\n\n          " + updateSnippet + "\n        } else if (" + (windowSizeVec4Remainder === 3) + ") {\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            getValue(batch, inIdx + 1),\n            getValue(batch, inIdx + 2),\n            initializationValue\n          );\n\n          " + updateSnippet + "\n        }\n        setOutput(" + returnValue + ");\n      }\n    ";
+        this.userCode = "\n      const float initializationValue = " + initializationValue + ";\n      const vec4 ones = vec4(1.0, 1.0, 1.0, 1.0);\n\n      float getValue(int batch, int inIdx) {\n        " + checkOutOfBounds + "\n        return getX(batch, inIdx);\n      }\n\n      void main() {\n        ivec2 coords = getOutputCoords();\n        int batch = coords[0];\n        int outIdx = coords[1];\n        int inOffset = outIdx * " + windowSize + ";\n\n        vec4 minMaxValue = vec4(" + initializationValue + ");\n        float prodValue = 1.0;\n        float sumValue = 0.0;\n        float allValue = 1.0;\n        float anyValue = 0.0;\n\n        for (int i = 0; i < " + windowSizeNearestVec4 + "; i += 4) {\n          int inIdx = inOffset + i;\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            getValue(batch, inIdx + 1),\n            getValue(batch, inIdx + 2),\n            getValue(batch, inIdx + 3)\n          );\n\n          " + updateSnippet + "\n        }\n\n        int inIdx = inOffset + " + windowSizeNearestVec4 + ";\n        if (" + (windowSizeVec4Remainder === 1) + ") {\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            initializationValue,\n            initializationValue,\n            initializationValue\n          );\n\n          " + updateSnippet + "\n        } else if (" + (windowSizeVec4Remainder === 2) + ") {\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            getValue(batch, inIdx + 1),\n            initializationValue,\n            initializationValue\n          );\n\n          " + updateSnippet + "\n        } else if (" + (windowSizeVec4Remainder === 3) + ") {\n          " + vecType + " values = " + vecType + "(\n            getValue(batch, inIdx),\n            getValue(batch, inIdx + 1),\n            getValue(batch, inIdx + 2),\n            initializationValue\n          );\n\n          " + updateSnippet + "\n        }\n        setOutput(" + returnValue + ");\n      }\n    ";
     }
     return ReduceProgram;
 }());
 exports.ReduceProgram = ReduceProgram;
 
-},{}],56:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var util = require("../../util");
+var shader_util = require("./shader_compiler_util");
+var ReshapePackedProgram = (function () {
+    function ReshapePackedProgram(outputShape, inputShape) {
+        this.variableNames = ['A'];
+        this.usesPackedTextures = true;
+        this.outputShape = outputShape;
+        var mainLoop = "";
+        for (var i = 0; i < 4; i++) {
+            var thisRC = "thisRC = rc;";
+            if (i % 2 === 1) {
+                thisRC += "thisRC.z += 1;";
+            }
+            if (i > 1) {
+                thisRC += "thisRC.y += 1;";
+            }
+            mainLoop += "\n        " + thisRC + "\n        " + (i > 0 ? "if(thisRC.y < rows && thisRC.z < cols){" : '') + "\n          int flatIndex = getFlatIndex(thisRC);\n\n          ivec3 inputRC = inputCoordsFromReshapedOutCoords(flatIndex);\n          vec2 inputRCInnerDims = vec2(float(inputRC.y),float(inputRC.z));\n\n          result[" + i + "] =\n            getChannel(getA(inputRC.x, inputRC.y, inputRC.z), inputRCInnerDims);\n        " + (i > 0 ? '}' : '') + "\n      ";
+        }
+        this.userCode = "\n      " + getReshapedInputCoords(inputShape) + "\n      " + getFlatIndex(outputShape) + "\n\n      void main() {\n        ivec3 rc = getOutputCoords();\n\n        vec4 result = vec4(0.);\n\n        ivec3 thisRC;\n        int rows = " + outputShape[1] + ";\n        int cols = " + outputShape[2] + ";\n\n        " + mainLoop + "\n\n        setOutput(result);\n      }\n    ";
+    }
+    return ReshapePackedProgram;
+}());
+exports.ReshapePackedProgram = ReshapePackedProgram;
+function getFlatIndex(shape) {
+    var dotCoordsWithStrides = shader_util.dotify(['coords.x', 'coords.y', 'coords.z'], util.computeStrides(shape).map(function (d) { return d.toString(); }).concat(['1.']));
+    return "\n    int getFlatIndex(ivec3 coords) {\n      return round(" + dotCoordsWithStrides + ");\n    }\n  ";
+}
+function getReshapedInputCoords(shape) {
+    var coordsFromIndexSnippet = shader_util.getLogicalCoordinatesFromFlatIndex(['r', 'c', 'd'], shape);
+    return "\n    ivec3 inputCoordsFromReshapedOutCoords(int index) {\n      " + coordsFromIndexSnippet + "\n      return ivec3(r, c, d);\n    }\n  ";
+}
+
+},{"../../util":157,"./shader_compiler_util":76}],67:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ResizeBilinearBackpropProgram = (function () {
@@ -8156,7 +9489,7 @@ var ResizeBilinearBackpropProgram = (function () {
 }());
 exports.ResizeBilinearBackpropProgram = ResizeBilinearBackpropProgram;
 
-},{}],57:[function(require,module,exports){
+},{}],68:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ResizeBilinearProgram = (function () {
@@ -8179,7 +9512,7 @@ var ResizeBilinearProgram = (function () {
 }());
 exports.ResizeBilinearProgram = ResizeBilinearProgram;
 
-},{}],58:[function(require,module,exports){
+},{}],69:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ResizeNearestNeigborBackpropProgram = (function () {
@@ -8209,7 +9542,7 @@ var ResizeNearestNeigborBackpropProgram = (function () {
 }());
 exports.ResizeNearestNeigborBackpropProgram = ResizeNearestNeigborBackpropProgram;
 
-},{}],59:[function(require,module,exports){
+},{}],70:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var ResizeNearestNeighborProgram = (function () {
@@ -8233,7 +9566,7 @@ var ResizeNearestNeighborProgram = (function () {
 }());
 exports.ResizeNearestNeighborProgram = ResizeNearestNeighborProgram;
 
-},{}],60:[function(require,module,exports){
+},{}],71:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -8263,7 +9596,41 @@ var ReverseProgram = (function () {
 }());
 exports.ReverseProgram = ReverseProgram;
 
-},{"./shader_compiler":63}],61:[function(require,module,exports){
+},{"./shader_compiler":75}],72:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var shader_compiler_1 = require("./shader_compiler");
+var ScatterProgram = (function () {
+    function ScatterProgram(updateSize, sliceDim, indicesRank, updatesRank, strides, shape, summingDupeIndex) {
+        if (summingDupeIndex === void 0) { summingDupeIndex = true; }
+        this.variableNames = ['updates', 'indices', 'defaultValue'];
+        this.outputShape = shape;
+        var stridesType = shader_compiler_1.getCoordsDataType(strides.length);
+        var dtype = shader_compiler_1.getCoordsDataType(shape.length);
+        var indicesString = '';
+        if (indicesRank === 1) {
+            indicesString = 'i';
+        }
+        else if (indicesRank === 2) {
+            indicesString = 'i, j';
+        }
+        var indicesSnippet = "getIndices(" + indicesString + ")";
+        var updatesString = '';
+        if (updatesRank === 1) {
+            updatesString = 'i';
+        }
+        else if (updatesRank === 2) {
+            updatesString = 'i, coords[1]';
+        }
+        var updatesSnippet = "getUpdates(" + updatesString + ")";
+        var strideString = sliceDim > 1 ? 'strides[j]' : 'strides';
+        this.userCode = "\n        " + stridesType + " strides = " + stridesType + "(" + strides + ");\n\n        void main() {\n          " + dtype + " coords = getOutputCoords();\n          float sum = 0.0;\n          bool found = false;\n          for (int i = 0; i < " + updateSize + "; i++) {\n            int flattenedIndex = 0;\n            for (int j = 0; j < " + sliceDim + "; j++) {\n              int index = round(" + indicesSnippet + ");\n              flattenedIndex += index * " + strideString + ";\n            }\n            if (flattenedIndex == coords[0]) {\n              sum += " + updatesSnippet + ";\n              found = true;\n            }\n          }\n          setOutput(mix(getDefaultValue(), sum, float(found)));\n        }\n      ";
+    }
+    return ScatterProgram;
+}());
+exports.ScatterProgram = ScatterProgram;
+
+},{"./shader_compiler":75}],73:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var SegmentOpProgram = (function () {
@@ -8294,7 +9661,7 @@ var SegmentOpProgram = (function () {
 }());
 exports.SegmentOpProgram = SegmentOpProgram;
 
-},{}],62:[function(require,module,exports){
+},{}],74:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -8331,12 +9698,13 @@ var SelectProgram = (function () {
 }());
 exports.SelectProgram = SelectProgram;
 
-},{"./shader_compiler":63}],63:[function(require,module,exports){
+},{"./shader_compiler":75}],75:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var broadcast_util = require("../../ops/broadcast_util");
 var util = require("../../util");
-function makeShader(inputsInfo, outputShape, userCode, broadcast) {
+var shader_util = require("./shader_compiler_util");
+function makeShader(inputsInfo, outputShape, userCode, broadcast, usesPackedTextures) {
     var inputPrefixSnippet = inputsInfo.map(function (x) {
         var size = util.sizeFromShape(x.shapeInfo.logicalShape);
         if (x.shapeInfo.isUniform) {
@@ -8348,11 +9716,25 @@ function makeShader(inputsInfo, outputShape, userCode, broadcast) {
     var inputSamplingSnippet = inputsInfo.map(function (x) { return getInputSamplingSnippet(x, outputShape, broadcast); })
         .join('\n');
     var outTexShape = outputShape.texShape;
-    var outputSamplingSnippet = getOutputSamplingSnippet(outputShape.logicalShape, outTexShape);
+    var outputSamplingSnippet;
+    var floatTextureSetOutputSnippet;
+    var shaderPrefix = SHADER_PREFIX;
+    if (outputShape.isPacked) {
+        outputSamplingSnippet =
+            getPackedOutputSamplingSnippet(outputShape.logicalShape, outTexShape);
+        floatTextureSetOutputSnippet = FLOAT_TEXTURE_SET_RGBA_SNIPPET;
+    }
+    else {
+        outputSamplingSnippet =
+            getOutputSamplingSnippet(outputShape.logicalShape, outTexShape);
+        floatTextureSetOutputSnippet = FLOAT_TEXTURE_SET_R_SNIPPET;
+    }
+    if (usesPackedTextures) {
+        shaderPrefix += SHADER_PACKED_PREFIX;
+    }
     var source = [
-        SHADER_PREFIX, FLOAT_TEXTURE_SAMPLE_SNIPPET,
-        FLOAT_TEXTURE_SETOUTPUT_SNIPPET, inputPrefixSnippet, outputSamplingSnippet,
-        inputSamplingSnippet, userCode
+        shaderPrefix, FLOAT_TEXTURE_SAMPLE_SNIPPET, floatTextureSetOutputSnippet,
+        inputPrefixSnippet, outputSamplingSnippet, inputSamplingSnippet, userCode
     ].join('\n');
     return source;
 }
@@ -8379,14 +9761,52 @@ function getSamplerFromInInfo(inInfo) {
                 " is not yet supported");
     }
 }
+function getPackedSamplerFromInInfo(inInfo) {
+    var shape = inInfo.shapeInfo.logicalShape;
+    switch (shape.length) {
+        case 1:
+            return getPackedSampler1D(inInfo);
+        case 2:
+            return getPackedSampler2D(inInfo);
+        case 3:
+            return getPackedSampler3D(inInfo);
+        case 4:
+            return getPackedSampler4D(inInfo);
+        default:
+            throw new Error("Packed " + shape.length + "-D input sampling" +
+                " is not yet supported");
+    }
+}
 function getInputSamplingSnippet(inInfo, outShapeInfo, broadcast) {
     var res = getSamplerFlat(inInfo);
-    res += getSamplerFromInInfo(inInfo);
+    if (inInfo.shapeInfo.isPacked) {
+        res += getPackedSamplerFromInInfo(inInfo);
+    }
+    else {
+        res += getSamplerFromInInfo(inInfo);
+    }
     if (broadcast ||
         util.arraysEqual(inInfo.shapeInfo.logicalShape, outShapeInfo.logicalShape)) {
         res += getSamplerAtOutputCoords(inInfo, outShapeInfo, broadcast);
     }
     return res;
+}
+function getPackedOutputSamplingSnippet(outShape, outTexShape) {
+    switch (outShape.length) {
+        case 0:
+            return getOutputScalarCoords();
+        case 1:
+            return getOutputPacked1DCoords(outShape, outTexShape);
+        case 2:
+            return getOutputPacked2DCoords(outShape, outTexShape);
+        case 3:
+            return getOutputPacked3DCoords(outShape, outTexShape);
+        case 4:
+            return getOutputPacked4DCoords(outShape, outTexShape);
+        default:
+            throw new Error(outShape.length + "-D packed output " +
+                "coordinate fetching is not yet supported");
+    }
 }
 function getOutputSamplingSnippet(outShape, outTexShape) {
     switch (outShape.length) {
@@ -8408,17 +9828,29 @@ function getOutputSamplingSnippet(outShape, outTexShape) {
             throw new Error(outShape.length + "-D output sampling is not yet supported");
     }
 }
-var SAMPLE_1D_SNIPPET = "\nvec2 UVfrom1D(int texNumR, int texNumC, int index) {\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
-var SAMPLE_2D_SNIPPET = "\nvec2 UVfrom2D(int texNumR, int texNumC, int numC, int row, int col) {\n  int index = row * numC + col;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
-var SAMPLE_3D_SNIPPET = "\nvec2 UVfrom3D(int texNumR, int texNumC, int stride0,\n    int stride1, int row, int col, int depth) {\n  // Explicitly use integer operations as dot() only works on floats.\n  int index = row * stride0 + col * stride1 + depth;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
-var SAMPLE_4D_SNIPPET = "\nvec2 UVfrom4D(int texNumR, int texNumC, int stride0,\n    int stride1, int stride2, int row, int col, int depth,\n    int depth2) {\n  // Explicitly use integer operations as dot() only works on floats.\n  int index = row * stride0 + col * stride1 + depth * stride2 + depth2;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
+var SAMPLE_1D_SNIPPET = "\nvec2 UVfrom1D(int texNumR, int texNumC, int index) {\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\nvec2 packedUVfrom1D(int texNumR, int texNumC, int index) {\n  int texelIndex = index / 2;\n  int texR = texelIndex / texNumC;\n  int texC = texelIndex - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
+var SAMPLE_2D_SNIPPET = "\nvec2 UVfrom2D(int texNumR, int texNumC, int numC, int row, int col) {\n  int index = row * numC + col;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\nvec2 packedUVfrom2D(int texelsInLogicalRow, int texNumR,\n  int texNumC, int row, int col) {\n  int texelIndex = (row / 2) * texelsInLogicalRow + (col / 2);\n  int texR = texelIndex / texNumC;\n  int texC = texelIndex - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
+var SAMPLE_3D_SNIPPET = "\nvec2 UVfrom3D(int texNumR, int texNumC, int stride0,\n    int stride1, int row, int col, int depth) {\n  // Explicitly use integer operations as dot() only works on floats.\n  int index = row * stride0 + col * stride1 + depth;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\nvec2 packedUVfrom3D(int texNumR, int texNumC,\n    int texelsInBatch, int texelsInLogicalRow, int b,\n    int row, int col) {\n  int index = b * texelsInBatch + (row / 2) * texelsInLogicalRow + (col / 2);\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
+var SAMPLE_4D_SNIPPET = "\nvec2 UVfrom4D(int texNumR, int texNumC, int stride0,\n    int stride1, int stride2, int row, int col, int depth,\n    int depth2) {\n  // Explicitly use integer operations as dot() only works on floats.\n  int index = row * stride0 + col * stride1 + depth * stride2 + depth2;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\nvec2 packedUVfrom4D(int texNumR, int texNumC, int texelsInBatch2,\n    int texelsInBatch, int texelsInLogicalRow, int b2, int b,\n    int row, int col) {\n  int index = b2 * texelsInBatch2 + b * texelsInBatch +\n    (row / 2) * texelsInLogicalRow + (col / 2);\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
 var SAMPLE_5D_SNIPPET = "\nvec2 UVfrom5D(int texNumR, int texNumC, int stride0,\n    int stride1, int stride2, int stride3, int row, int col, int depth,\n    int depth2, int depth3) {\n  // Explicitly use integer operations as dot() only works on floats.\n  int index = row * stride0 + col * stride1 +\n              depth * stride2 + depth2 * stride3 + depth3;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
 var SAMPLE_6D_SNIPPET = "\nvec2 UVfrom6D(int texNumR, int texNumC, int stride0,\n    int stride1, int stride2, int stride3, int stride4,\n    int row, int col, int depth, int depth2, int depth3, int depth4) {\n  // Explicitly use integer operations as dot() only works on floats.\n  int index = row * stride0 + col * stride1 + depth * stride2 + depth2 *\n    stride3 + depth3 * stride4 + depth4;\n  int texR = index / texNumC;\n  int texC = index - texR * texNumC;\n  return (vec2(texC, texR) + halfCR) / vec2(texNumC, texNumR);\n}\n";
 var FLOAT_TEXTURE_SAMPLE_SNIPPET = "\n  float sampleTexture(sampler2D textureSampler, vec2 uv) {\n    return texture2D(textureSampler, uv).r;\n  }\n";
-var FLOAT_TEXTURE_SETOUTPUT_SNIPPET = "\n  void setOutput(float val) {\n    gl_FragColor = vec4(val, 0, 0, 0);\n  }\n";
-var SHADER_PREFIX = "\n  precision highp float;\n  precision highp int;\n  varying vec2 resultUV;\n  const vec2 halfCR = vec2(0.5, 0.5);\n\n  struct ivec5\n  {\n    int x;\n    int y;\n    int z;\n    int w;\n    int u;\n  };\n\n  struct ivec6\n  {\n    int x;\n    int y;\n    int z;\n    int w;\n    int u;\n    int v;\n  };\n\n  bool isNaN(float val) {\n    return (val < 0.0 || 0.0 < val || val == 0.0) ? false : true;\n  }\n\n  bool hasNaN(vec4 values) {\n    vec4 v1 = values * values;\n    vec4 v2 = values * values;\n    return any(notEqual(v1, v2));\n  }\n\n  float getNaN(vec4 values) {\n    return dot(vec4(1), values);\n  }\n\n  int round(float value) {\n    return int(floor(value + 0.5));\n  }\n\n  int imod(int x, int y) {\n    return x - y * (x / y);\n  }\n\n  //Based on the work of Dave Hoskins\n  //https://www.shadertoy.com/view/4djSRW\n  #define HASHSCALE1 443.8975\n  float random(float seed){\n    vec2 p = resultUV * seed;\n    vec3 p3  = fract(vec3(p.xyx) * HASHSCALE1);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n  }\n\n  " + SAMPLE_1D_SNIPPET + "\n  " + SAMPLE_2D_SNIPPET + "\n  " + SAMPLE_3D_SNIPPET + "\n  " + SAMPLE_4D_SNIPPET + "\n  " + SAMPLE_5D_SNIPPET + "\n  " + SAMPLE_6D_SNIPPET + "\n";
+var FLOAT_TEXTURE_SET_R_SNIPPET = "\n  void setOutput(float val) {\n    gl_FragColor = vec4(val, 0, 0, 0);\n  }\n";
+var FLOAT_TEXTURE_SET_RGBA_SNIPPET = "\n  void setOutput(vec4 val) {\n    gl_FragColor = val;\n  }\n";
+var SHADER_PREFIX = "\n  precision highp float;\n  precision highp int;\n  varying vec2 resultUV;\n  const vec2 halfCR = vec2(0.5, 0.5);\n\n  struct ivec5\n  {\n    int x;\n    int y;\n    int z;\n    int w;\n    int u;\n  };\n\n  struct ivec6\n  {\n    int x;\n    int y;\n    int z;\n    int w;\n    int u;\n    int v;\n  };\n\n  bool isNaN(float val) {\n    return (val < 1.0 || 0.0 < val || val == 0.0) ? false : true;\n  }\n\n  bool hasNaN(vec4 values) {\n    vec4 v1 = values * values;\n    vec4 v2 = values * values;\n    return any(notEqual(v1, v2));\n  }\n\n  float getNaN(vec4 values) {\n    return dot(vec4(1), values);\n  }\n\n  int round(float value) {\n    return int(floor(value + 0.5));\n  }\n\n  int imod(int x, int y) {\n    return x - y * (x / y);\n  }\n\n  //Based on the work of Dave Hoskins\n  //https://www.shadertoy.com/view/4djSRW\n  #define HASHSCALE1 443.8975\n  float random(float seed){\n    vec2 p = resultUV * seed;\n    vec3 p3  = fract(vec3(p.xyx) * HASHSCALE1);\n    p3 += dot(p3, p3.yzx + 19.19);\n    return fract((p3.x + p3.y) * p3.z);\n  }\n\n  " + SAMPLE_1D_SNIPPET + "\n  " + SAMPLE_2D_SNIPPET + "\n  " + SAMPLE_3D_SNIPPET + "\n  " + SAMPLE_4D_SNIPPET + "\n  " + SAMPLE_5D_SNIPPET + "\n  " + SAMPLE_6D_SNIPPET + "\n";
+var SHADER_PACKED_PREFIX = "\n  float getChannel(vec4 frag, vec2 innerDims) {\n    vec2 modCoord = mod(innerDims, 2.);\n    return modCoord.x == 0. ?\n      (modCoord.y == 0. ? frag.r : frag.g) :\n      (modCoord.y == 0. ? frag.b : frag.a);\n  }\n  float getChannel(vec4 frag, int dim) {\n    float modCoord = mod(float(dim), 2.);\n    return modCoord == 0. ? frag.r : frag.g;\n  }\n";
 function getOutputScalarCoords() {
     return "\n    int getOutputCoords() {\n      return 0;\n    }\n  ";
+}
+function getOutputPacked1DCoords(shape, texShape) {
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    if (texShape[0] === 1) {
+        return "\n      int getOutputCoords() {\n        return 2 * int(resultUV.x * " + packedTexShape[1] + ".0);\n      }\n    ";
+    }
+    if (texShape[1] === 1) {
+        return "\n      int getOutputCoords() {\n        return 2 * int(resultUV.y * " + packedTexShape[0] + ".0);\n      }\n    ";
+    }
+    return "\n    int getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + packedTexShape[0] + ", " + packedTexShape[1] + "));\n      return resTexRC.x * " + packedTexShape[1] + " + resTexRC.y;\n    }\n  ";
 }
 function getOutput1DCoords(shape, texShape) {
     if (texShape[0] === 1) {
@@ -8429,31 +9861,42 @@ function getOutput1DCoords(shape, texShape) {
     }
     return "\n    int getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + texShape[0] + ", " + texShape[1] + "));\n      return resTexRC.x * " + texShape[1] + " + resTexRC.y;\n    }\n  ";
 }
+function getOutputPacked3DCoords(shape, texShape) {
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    var texelsInLogicalRow = Math.ceil(shape[2] / 2);
+    var texelsInBatch = texelsInLogicalRow * Math.ceil(shape[1] / 2);
+    return "\n    ivec3 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + packedTexShape[0] + ", " + packedTexShape[1] + "));\n      int index = resTexRC.x * " + packedTexShape[1] + " + resTexRC.y;\n\n      int b = index / " + texelsInBatch + ";\n      index -= b * " + texelsInBatch + ";\n\n      int r = 2 * (index / " + texelsInLogicalRow + ");\n      int c = imod(index, " + texelsInLogicalRow + ") * 2;\n\n      return ivec3(b, r, c);\n    }\n  ";
+}
 function getOutput3DCoords(shape, texShape) {
-    var stride0 = shape[1] * shape[2];
-    var stride1 = shape[2];
-    return "\n    ivec3 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + texShape[0] + ", " + texShape[1] + "));\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n      int r = index / " + stride0 + ";\n      index -= r * " + stride0 + ";\n      int c = index / " + stride1 + ";\n      int d = index - c * " + stride1 + ";\n      return ivec3(r, c, d);\n    }\n  ";
+    var coordsFromIndexSnippet = shader_util.getLogicalCoordinatesFromFlatIndex(['r', 'c', 'd'], shape);
+    return "\n    ivec3 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + texShape[0] + ", " + texShape[1] + "));\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n      " + coordsFromIndexSnippet + "\n      return ivec3(r, c, d);\n    }\n  ";
+}
+function getOutputPacked4DCoords(shape, texShape) {
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    var texelsInLogicalRow = Math.ceil(shape[3] / 2);
+    var texelsInBatch = texelsInLogicalRow * Math.ceil(shape[2] / 2);
+    var texelsInBatch2 = texelsInBatch * shape[1];
+    return "\n    ivec4 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + packedTexShape[0] + ", " + packedTexShape[1] + "));\n      int index = resTexRC.x * " + packedTexShape[1] + " + resTexRC.y;\n\n      int b2 = index / " + texelsInBatch2 + ";\n      index -= b2 * " + texelsInBatch2 + ";\n\n      int b = index / " + texelsInBatch + ";\n      index -= b * " + texelsInBatch + ";\n\n      int r = 2 * (index / " + texelsInLogicalRow + ");\n      int c = imod(index, " + texelsInLogicalRow + ") * 2;\n\n      return ivec4(b2, b, r, c);\n    }\n  ";
 }
 function getOutput4DCoords(shape, texShape) {
-    var stride2 = shape[3];
-    var stride1 = shape[2] * stride2;
-    var stride0 = shape[1] * stride1;
-    return "\n    ivec4 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n        vec2(" + texShape[0] + ", " + texShape[1] + "));\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n\n      int r = index / " + stride0 + ";\n      index -= r * " + stride0 + ";\n\n      int c = index / " + stride1 + ";\n      index -= c * " + stride1 + ";\n\n      int d = index / " + stride2 + ";\n      int d2 = index - d * " + stride2 + ";\n\n      return ivec4(r, c, d, d2);\n    }\n  ";
+    var coordsFromIndexSnippet = shader_util.getLogicalCoordinatesFromFlatIndex(['r', 'c', 'd', 'd2'], shape);
+    return "\n    ivec4 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n        vec2(" + texShape[0] + ", " + texShape[1] + "));\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n      " + coordsFromIndexSnippet + "\n      return ivec4(r, c, d, d2);\n    }\n  ";
 }
 function getOutput5DCoords(shape, texShape) {
-    var stride3 = shape[4];
-    var stride2 = shape[3] * stride3;
-    var stride1 = shape[2] * stride2;
-    var stride0 = shape[1] * stride1;
-    return "\n    ivec5 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx * vec2(" + texShape[0] + ",\n                             " + texShape[1] + "));\n\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n\n      int r = index / " + stride0 + ";\n      index -= r * " + stride0 + ";\n\n      int c = index / " + stride1 + ";\n      index -= c * " + stride1 + ";\n\n      int d = index / " + stride2 + ";\n      index -= d * " + stride2 + ";\n\n      int d2 = index  / " + stride3 + ";\n      int d3 = index - d2 * " + stride3 + ";\n\n      ivec5 outShape = ivec5(r, c, d, d2, d3);\n      return outShape;\n    }\n  ";
+    var coordsFromIndexSnippet = shader_util.getLogicalCoordinatesFromFlatIndex(['r', 'c', 'd', 'd2', 'd3'], shape);
+    return "\n    ivec5 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx * vec2(" + texShape[0] + ",\n                             " + texShape[1] + "));\n\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n\n      " + coordsFromIndexSnippet + "\n\n      ivec5 outShape = ivec5(r, c, d, d2, d3);\n      return outShape;\n    }\n  ";
 }
 function getOutput6DCoords(shape, texShape) {
-    var stride4 = shape[5];
-    var stride3 = shape[4] * stride4;
-    var stride2 = shape[3] * stride3;
-    var stride1 = shape[2] * stride2;
-    var stride0 = shape[1] * stride1;
-    return "\n    ivec6 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n        vec2(" + texShape[0] + ", " + texShape[1] + "));\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n\n      int r = index / " + stride0 + ";\n      index -= r * " + stride0 + ";\n\n      int c = index / " + stride1 + ";\n      index -= c * " + stride1 + ";\n\n      int d = index / " + stride2 + ";\n      index -= d * " + stride2 + ";\n\n      int d2 = index / " + stride3 + ";\n      index -= d2 * " + stride3 + ";\n\n      int d3 = index / " + stride4 + ";\n      int d4 = index - d3 * " + stride4 + ";\n\n      ivec6 result = ivec6(r, c, d, d2, d3, d4);\n      return result;\n    }\n  ";
+    var coordsFromIndexSnippet = shader_util.getLogicalCoordinatesFromFlatIndex(['r', 'c', 'd', 'd2', 'd3', 'd4'], shape);
+    return "\n    ivec6 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n        vec2(" + texShape[0] + ", " + texShape[1] + "));\n      int index = resTexRC.x * " + texShape[1] + " + resTexRC.y;\n\n      " + coordsFromIndexSnippet + "\n\n      ivec6 result = ivec6(r, c, d, d2, d3, d4);\n      return result;\n    }\n  ";
+}
+function getOutputPacked2DCoords(shape, texShape) {
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    if (util.arraysEqual(shape, texShape)) {
+        return "\n      ivec2 getOutputCoords() {\n        return 2 * ivec2(resultUV.yx * vec2(" + packedTexShape[0] + ", " + packedTexShape[1] + "));\n      }\n    ";
+    }
+    var texelsInLogicalRow = Math.ceil(shape[1] / 2);
+    return "\n    ivec2 getOutputCoords() {\n      ivec2 resTexRC = ivec2(resultUV.yx *\n                             vec2(" + packedTexShape[0] + ", " + packedTexShape[1] + "));\n\n      int index = resTexRC.x * " + packedTexShape[1] + " + resTexRC.y;\n      int r = 2 * (index / " + texelsInLogicalRow + ");\n      int c = imod(index, " + texelsInLogicalRow + ") * 2;\n\n      return ivec2(r, c);\n    }\n  ";
 }
 function getOutput2DCoords(shape, texShape) {
     if (util.arraysEqual(shape, texShape)) {
@@ -8475,10 +9918,31 @@ function getSamplerScalar(inputInfo) {
     }
     return "\n    float " + funcName + "() {\n      return sampleTexture(" + texName + ", halfCR);\n    }\n  ";
 }
+function getPackedSampler1D(inputInfo) {
+    var texName = inputInfo.name;
+    var funcName = 'get' + texName.charAt(0).toUpperCase() + texName.slice(1);
+    var texShape = inputInfo.shapeInfo.texShape;
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    return "\n    vec4 " + funcName + "(int index) {\n      vec2 uv = packedUVfrom1D(\n        " + packedTexShape[0] + ", " + packedTexShape[1] + ", index);\n      return texture2D(" + texName + ", uv);\n    }\n  ";
+}
 function getSampler1D(inputInfo) {
     var texName = inputInfo.name;
     var funcName = 'get' + texName.charAt(0).toUpperCase() + texName.slice(1);
     return "\n    float " + funcName + "(int index) {\n      return " + funcName + "Flat(index);\n    }\n  ";
+}
+function getPackedSampler2D(inputInfo) {
+    var shape = inputInfo.shapeInfo.logicalShape;
+    var texName = inputInfo.name;
+    var funcName = 'get' + texName.charAt(0).toUpperCase() + texName.slice(1);
+    var texShape = inputInfo.shapeInfo.texShape;
+    var texNumR = texShape[0];
+    var texNumC = texShape[1];
+    if (texShape != null && util.arraysEqual(shape, texShape)) {
+        return "\n      vec4 " + funcName + "(int row, int col) {\n        vec2 uv = (vec2(col, row) + halfCR) / vec2(" + texNumC + ".0, " + texNumR + ".0);\n\n        return texture2D(" + texName + ", uv);\n      }\n    ";
+    }
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    var valuesPerRow = Math.ceil(shape[1] / 2);
+    return "\n    vec4 " + funcName + "(int row, int col) {\n      vec2 uv = packedUVfrom2D(" + valuesPerRow + ", " + packedTexShape[0] + ", " + packedTexShape[1] + ", row, col);\n      return texture2D(" + texName + ", uv);\n    }\n  ";
 }
 function getSampler2D(inputInfo) {
     var shape = inputInfo.shapeInfo.logicalShape;
@@ -8498,17 +9962,36 @@ function getSampler2D(inputInfo) {
         return "\n      " + getSamplerFromInInfo(newInputInfo) + "\n      float " + funcName + "(int row, int col) {\n        return " + funcName + "(" + getSqueezedParams(params, keptDims) + ");\n      }\n    ";
     }
     if (inputInfo.shapeInfo.isUniform) {
-        return "\n      float " + funcName + "(int row, int col) {\n        int index = row * " + shape[1] + " + col;\n        return " + funcName + "Flat(index);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col) {\n        float index = dot(vec2(row, col), vec2(" + shape[1] + ", 1));\n        return " + funcName + "Flat(round(index));\n      }\n    ";
     }
     var texNumR = texShape[0];
     var texNumC = texShape[1];
     if (texNumC === 1) {
-        return "\n    float " + funcName + "(int row, int col) {\n      int index = row * " + shape[1] + " + col;\n      vec2 uv = vec2(0.5, (float(index) + 0.5) / " + texNumR + ".0);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
+        return "\n    float " + funcName + "(int row, int col) {\n      float index = dot(vec2(row, col), vec2(" + shape[1] + ", 1));\n      vec2 uv = vec2(0.5, (index + 0.5) / " + texNumR + ".0);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
     }
     if (texNumR === 1) {
-        return "\n    float " + funcName + "(int row, int col) {\n      int index = row * " + shape[1] + " + col;\n      vec2 uv = vec2((float(index) + 0.5) / " + texNumC + ".0, 0.5);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
+        return "\n    float " + funcName + "(int row, int col) {\n      float index = dot(vec2(row, col), vec2(" + shape[1] + ", 1));\n      vec2 uv = vec2((index + 0.5) / " + texNumC + ".0, 0.5);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
     }
     return "\n  float " + funcName + "(int row, int col) {\n    vec2 uv = UVfrom2D(" + texNumR + ", " + texNumC + ", " + shape[1] + ", row, col);\n    return sampleTexture(" + texName + ", uv);\n  }\n";
+}
+function getPackedSampler3D(inputInfo) {
+    var shape = inputInfo.shapeInfo.logicalShape;
+    var texName = inputInfo.name;
+    var funcName = 'get' + texName.charAt(0).toUpperCase() + texName.slice(1);
+    var texShape = inputInfo.shapeInfo.texShape;
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    if (shape[0] === 1) {
+        var squeezedShape = shape.slice(1);
+        var keptDims = [1, 2];
+        var newInputInfo = squeezeInputInfo(inputInfo, squeezedShape);
+        var params = ['b', 'row', 'col'];
+        return "\n        " + getPackedSamplerFromInInfo(newInputInfo) + "\n        vec4 " + funcName + "(int b, int row, int col) {\n          return " + funcName + "(" + getSqueezedParams(params, keptDims) + ");\n        }\n      ";
+    }
+    var texNumR = packedTexShape[0];
+    var texNumC = packedTexShape[1];
+    var valuesPerRow = Math.ceil(shape[2] / 2);
+    var texelsInBatch = valuesPerRow * Math.ceil(shape[1] / 2);
+    return "\n    vec4 " + funcName + "(int b, int row, int col) {\n      vec2 uv = packedUVfrom3D(\n        " + texNumR + ", " + texNumC + ", " + texelsInBatch + ", " + valuesPerRow + ", b, row, col);\n      return texture2D(" + texName + ", uv);\n    }\n  ";
 }
 function getSampler3D(inputInfo) {
     var shape = inputInfo.shapeInfo.logicalShape;
@@ -8524,18 +10007,31 @@ function getSampler3D(inputInfo) {
         return "\n        " + getSamplerFromInInfo(newInputInfo) + "\n        float " + funcName + "(int row, int col, int depth) {\n          return " + funcName + "(" + getSqueezedParams(params, keptDims) + ");\n        }\n      ";
     }
     if (inputInfo.shapeInfo.isUniform) {
-        return "\n      float " + funcName + "(int row, int col, int depth) {\n        int index = row * " + stride0 + " + col * " + stride1 + " + depth;\n        return " + funcName + "Flat(index);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth) {\n        float index = dot(vec3(row, col, depth),\n                          vec3(" + stride0 + ", " + stride1 + ", 1));\n        return " + funcName + "Flat(round(index));\n      }\n    ";
     }
     var texShape = inputInfo.shapeInfo.texShape;
     var texNumR = texShape[0];
     var texNumC = texShape[1];
     if (texNumC === stride0) {
-        return "\n        float " + funcName + "(int row, int col, int depth) {\n          int texR = row;\n          int texC = col * " + stride1 + " + depth;\n          vec2 uv = (vec2(texC, texR) + halfCR) /\n                     vec2(" + texNumC + ".0, " + texNumR + ".0);\n          return sampleTexture(" + texName + ", uv);\n        }\n      ";
+        return "\n        float " + funcName + "(int row, int col, int depth) {\n          float texR = float(row);\n          float texC = dot(vec2(col, depth), vec2(" + stride1 + ", 1));\n          vec2 uv = (vec2(texC, texR) + halfCR) /\n                     vec2(" + texNumC + ".0, " + texNumR + ".0);\n          return sampleTexture(" + texName + ", uv);\n        }\n      ";
     }
     if (texNumC === stride1) {
-        return "\n    float " + funcName + "(int row, int col, int depth) {\n      int texR = row * " + shape[1] + " + col;\n      int texC = depth;\n      vec2 uv = (vec2(texC, texR) + halfCR) / vec2(" + texNumC + ".0, " + texNumR + ".0);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
+        return "\n    float " + funcName + "(int row, int col, int depth) {\n      float texR = dot(vec2(row, col), vec2(" + shape[1] + ", 1));\n      float texC = float(depth);\n      vec2 uv = (vec2(texC, texR) + halfCR) / vec2(" + texNumC + ".0, " + texNumR + ".0);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
     }
     return "\n      float " + funcName + "(int row, int col, int depth) {\n        vec2 uv = UVfrom3D(\n            " + texNumR + ", " + texNumC + ", " + stride0 + ", " + stride1 + ", row, col, depth);\n        return sampleTexture(" + texName + ", uv);\n      }\n  ";
+}
+function getPackedSampler4D(inputInfo) {
+    var shape = inputInfo.shapeInfo.logicalShape;
+    var texName = inputInfo.name;
+    var funcName = 'get' + texName.charAt(0).toUpperCase() + texName.slice(1);
+    var texShape = inputInfo.shapeInfo.texShape;
+    var packedTexShape = [Math.ceil(texShape[0] / 2), Math.ceil(texShape[1] / 2)];
+    var texNumR = packedTexShape[0];
+    var texNumC = packedTexShape[1];
+    var valuesPerRow = Math.ceil(shape[3] / 2);
+    var texelsInBatch = valuesPerRow * Math.ceil(shape[2] / 2);
+    var texelsInBatch2 = texelsInBatch * shape[1];
+    return "\n    vec4 " + funcName + "(int b2, int b, int row, int col) {\n      vec2 uv = packedUVfrom4D(\n        " + texNumR + ", " + texNumC + ", " + texelsInBatch2 + ",\n        " + texelsInBatch + ", " + valuesPerRow + ", b2, b, row, col);\n      return texture2D(" + texName + ", uv);\n    }\n  ";
 }
 function getSampler4D(inputInfo) {
     var shape = inputInfo.shapeInfo.logicalShape;
@@ -8551,16 +10047,16 @@ function getSampler4D(inputInfo) {
         return "\n      " + getSamplerFromInInfo(newInputInfo) + "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        return " + funcName + "(" + getSqueezedParams(params, keptDims) + ");\n      }\n    ";
     }
     if (inputInfo.shapeInfo.isUniform) {
-        return "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        int index = row * " + stride0 + " + col * " + stride1 + " +\n            depth * " + stride2 + " + depth2;\n        return " + funcName + "Flat(index);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        float index = dot(vec4(row, col, depth, depth2),\n                          vec4(" + stride0 + ", " + stride1 + ", " + stride2 + ", 1));\n        return " + funcName + "Flat(round(index));\n      }\n    ";
     }
     var texShape = inputInfo.shapeInfo.texShape;
     var texNumR = texShape[0];
     var texNumC = texShape[1];
     if (texNumC === stride0) {
-        return "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        int texR = row;\n        int texC = col * " + stride1 + " + depth * " + stride2 + " + depth2;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                   vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        float texR = float(row);\n        float texC =\n            dot(vec3(col, depth, depth2), vec3(" + stride1 + ", " + stride2 + ", 1));\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                   vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
     }
     if (texNumC === stride2) {
-        return "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        int texR = row * " + shape[1] * shape[2] + " + col * " + shape[2] + " + depth;\n        int texC = depth2;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                  vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth, int depth2) {\n        float texR = dot(vec3(row, col, depth),\n                         vec3(" + shape[1] * shape[2] + ", " + shape[2] + ", 1));\n        float texC = float(depth2);\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                  vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
     }
     return "\n    float " + funcName + "(int row, int col, int depth, int depth2) {\n      vec2 uv = UVfrom4D(" + texNumR + ", " + texNumC + ", " + stride0 + ", " + stride1 + ",\n          " + stride2 + ", row, col, depth, depth2);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
 }
@@ -8579,16 +10075,16 @@ function getSampler5D(inputInfo) {
         return "\n      " + getSamplerFromInInfo(newInputInfo) + "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        return " + funcName + "(" + getSqueezedParams(params, keptDims) + ");\n      }\n    ";
     }
     if (inputInfo.shapeInfo.isUniform) {
-        return "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        int index = row * " + stride0 + " + col * " + stride1 + " +\n            depth * " + stride2 + " + depth2 * " + stride3 + " + depth3;\n        return " + funcName + "Flat(index);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        float index = dot(\n          vec4(row, col, depth, depth2),\n          vec4(" + stride0 + ", " + stride1 + ", " + stride2 + ", " + stride3 + ")) +\n          depth3;\n        return " + funcName + "Flat(index);\n      }\n    ";
     }
     var texShape = inputInfo.shapeInfo.texShape;
     var texNumR = texShape[0];
     var texNumC = texShape[1];
     if (texNumC === stride0) {
-        return "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        int texR = row;\n        int texC = col * " + stride1 + " + depth * " + stride2 + " +\n                   depth2 * " + stride3 + " + depth3;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                   vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        int texR = row;\n        float texC = dot(\n          vec4(col, depth, depth2, depth3),\n          vec4(" + stride1 + ", " + stride2 + ", " + stride3 + ", 1));\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                   vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
     }
     if (texNumC === stride3) {
-        return "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        int texR = row * " + shape[1] * shape[2] + " + col * " + shape[2] + " +\n                   depth * " + shape[3] + " + depth2;\n        int texC = depth3;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                  vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n        float texR = dot(\n          vec4(row, col, depth, depth2),\n          vec4(" + shape[1] * shape[2] * shape[3] + ", " + shape[2] * shape[3] + ",\n            " + shape[3] + ", 1));\n        int texC = depth3;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                  vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
     }
     return "\n    float " + funcName + "(int row, int col, int depth, int depth2, int depth3) {\n      vec2 uv = UVfrom5D(" + texNumR + ", " + texNumC + ", " + stride0 + ", " + stride1 + ",\n          " + stride2 + ", " + stride3 + ", row, col, depth, depth2, depth3);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
 }
@@ -8608,16 +10104,16 @@ function getSampler6D(inputInfo) {
         return "\n      " + getSamplerFromInInfo(newInputInfo) + "\n      float " + funcName + "(int row, int col, int depth,\n                    int depth2, int depth3, int depth4) {\n        return " + funcName + "(" + getSqueezedParams(params, keptDims) + ");\n      }\n    ";
     }
     if (inputInfo.shapeInfo.isUniform) {
-        return "\n      float " + funcName + "(int row, int col, int depth,\n                  int depth2, int depth3, int depth4) {\n        int index = row * " + stride0 + " + col * " + stride1 + " +\n            depth * " + stride2 + " + depth2 * " + stride3 + " + depth3 * " + stride3 + "\n            + depth4\n        return " + funcName + "Flat(index);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth,\n                  int depth2, int depth3, int depth4) {\n        float index = dot(\n          vec4(row, col, depth, depth2),\n          vec4(" + stride0 + ", " + stride1 + ", " + stride2 + ", " + stride3 + ")) +\n          dot(\n            vec2(depth3, depth4),\n            vec2(" + stride4 + ", 1));\n        return " + funcName + "Flat(index);\n      }\n    ";
     }
     var texShape = inputInfo.shapeInfo.texShape;
     var texNumR = texShape[0];
     var texNumC = texShape[1];
     if (texNumC === stride0) {
-        return "\n      float " + funcName + "(int row, int col, int depth,\n                    int depth2, int depth3, int depth4) {\n        int texR = row;\n        int texC = col * " + stride1 + " + depth * " + stride2 + " + depth2;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                   vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth,\n                    int depth2, int depth3, int depth4) {\n        int texR = row;\n        float texC = dot(\n          vec4(col, depth, depth2, depth3),\n          vec4(" + stride1 + ", " + stride2 + ", " + stride3 + ", " + stride4 + ")) + depth4;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                   vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
     }
     if (texNumC === stride4) {
-        return "\n      float " + funcName + "(int row, int col, int depth,\n                    int depth2, int depth3, int depth4) {\n        int texR = row * " + shape[1] * shape[2] + " + col * " + shape[2] + " + depth;\n        int texC = depth4;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                  vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
+        return "\n      float " + funcName + "(int row, int col, int depth,\n                    int depth2, int depth3, int depth4) {\n        float texR = dot(\n          vec4(row, col, depth, depth2),\n          vec4(" + shape[1] * shape[2] * shape[3] * shape[4] + ",\n               " + shape[2] * shape[3] * shape[4] + ",\n               " + shape[3] * shape[4] + ",\n               " + shape[4] + ")) + depth3;\n        int texC = depth4;\n        vec2 uv = (vec2(texC, texR) + halfCR) /\n                  vec2(" + texNumC + ".0, " + texNumR + ".0);\n        return sampleTexture(" + texName + ", uv);\n      }\n    ";
     }
     return "\n    float " + funcName + "(int row, int col, int depth,\n                  int depth2, int depth3, int depth4) {\n      vec2 uv = UVfrom6D(" + texNumR + ", " + texNumC + ", " + stride0 + ", " + stride1 + ",\n          " + stride2 + ", " + stride3 + ", " + stride4 + "\n          ,row, col, depth, depth2, depth3, depth4);\n      return sampleTexture(" + texName + ", uv);\n    }\n  ";
 }
@@ -8746,7 +10242,57 @@ function getSqueezedParams(params, keptDims) {
     return keptDims.map(function (d) { return params[d]; }).join(', ');
 }
 
-},{"../../ops/broadcast_util":79,"../../util":134}],64:[function(require,module,exports){
+},{"../../ops/broadcast_util":94,"../../util":157,"./shader_compiler_util":76}],76:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var util = require("../../util");
+function getLogicalCoordinatesFromFlatIndex(coords, shape, index) {
+    if (index === void 0) { index = 'index'; }
+    var strides = util.computeStrides(shape);
+    return strides
+        .map(function (stride, i) {
+        var line1 = "int " + coords[i] + " = " + index + " / " + stride;
+        var line2 = i === strides.length - 1 ?
+            "int " + coords[i + 1] + " = " + index + " - " + coords[i] + " * " + stride :
+            "index -= " + coords[i] + " * " + stride;
+        return line1 + "; " + line2 + ";";
+    })
+        .join('');
+}
+exports.getLogicalCoordinatesFromFlatIndex = getLogicalCoordinatesFromFlatIndex;
+function buildVec(x) {
+    if (x.length === 1) {
+        return "" + x[0];
+    }
+    return "vec" + x.length + "(" + x.join(',') + ")";
+}
+function dotify(x, y) {
+    if (x.length !== y.length) {
+        throw new Error("Vectors to be dotted must be of the same length -" +
+            ("got " + x.length + " and " + y.length));
+    }
+    var slices = [];
+    var nearestVec4 = Math.floor(x.length / 4);
+    var nearestVec4Remainder = x.length % 4;
+    for (var i = 0; i < nearestVec4; i++) {
+        var xSlice = x.slice(i * 4, i * 4 + 4);
+        var ySlice = y.slice(i * 4, i * 4 + 4);
+        slices.push(buildVec(xSlice) + ", " + buildVec(ySlice));
+    }
+    if (nearestVec4Remainder !== 0) {
+        var xSlice = x.slice(nearestVec4 * 4);
+        var ySlice = y.slice(nearestVec4 * 4);
+        if (xSlice.length === 1) {
+            xSlice = xSlice.map(function (d) { return "float(" + d + ")"; });
+            ySlice = ySlice.map(function (d) { return "float(" + d + ")"; });
+        }
+        slices.push(buildVec(xSlice) + ", " + buildVec(ySlice));
+    }
+    return slices.map(function (d, i) { return "dot(" + d + ")"; }).join('+');
+}
+exports.dotify = dotify;
+
+},{"../../util":157}],77:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -8810,7 +10356,7 @@ function getCoords(rank) {
     }
 }
 
-},{"./shader_compiler":63}],65:[function(require,module,exports){
+},{"./shader_compiler":75}],78:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -8848,9 +10394,10 @@ var StridedSliceProgram = (function () {
 }());
 exports.StridedSliceProgram = StridedSliceProgram;
 
-},{"./shader_compiler":63}],66:[function(require,module,exports){
+},{"./shader_compiler":75}],79:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+var util = require("../../util");
 var TextureUsage;
 (function (TextureUsage) {
     TextureUsage[TextureUsage["RENDER"] = 0] = "RENDER";
@@ -8860,9 +10407,11 @@ var TextureUsage;
 })(TextureUsage = exports.TextureUsage || (exports.TextureUsage = {}));
 var PhysicalTextureType;
 (function (PhysicalTextureType) {
-    PhysicalTextureType[PhysicalTextureType["FLOAT16"] = 0] = "FLOAT16";
-    PhysicalTextureType[PhysicalTextureType["FLOAT32"] = 1] = "FLOAT32";
-    PhysicalTextureType[PhysicalTextureType["UNSIGNED_BYTE"] = 2] = "UNSIGNED_BYTE";
+    PhysicalTextureType[PhysicalTextureType["UNPACKED_FLOAT16"] = 0] = "UNPACKED_FLOAT16";
+    PhysicalTextureType[PhysicalTextureType["UNPACKED_FLOAT32"] = 1] = "UNPACKED_FLOAT32";
+    PhysicalTextureType[PhysicalTextureType["PACKED_4X1_UNSIGNED_BYTE"] = 2] = "PACKED_4X1_UNSIGNED_BYTE";
+    PhysicalTextureType[PhysicalTextureType["PACKED_2X2_FLOAT32"] = 3] = "PACKED_2X2_FLOAT32";
+    PhysicalTextureType[PhysicalTextureType["PACKED_2X2_FLOAT16"] = 4] = "PACKED_2X2_FLOAT16";
 })(PhysicalTextureType = exports.PhysicalTextureType || (exports.PhysicalTextureType = {}));
 function getUnpackedMatrixTextureShapeWidthHeight(rows, columns) {
     return [columns, rows];
@@ -8930,118 +10479,130 @@ function getPackedRGBAArraySizeFromMatrixShape(rows, columns) {
     return w * h * 4;
 }
 exports.getPackedRGBAArraySizeFromMatrixShape = getPackedRGBAArraySizeFromMatrixShape;
-function encodeMatrixToPackedRGBA(matrix, rows, columns, packedRGBA) {
+function encodeMatrixToPackedRGBA(matrix, batches, rows, columns, packedRGBA) {
     var requiredSize = getPackedRGBAArraySizeFromMatrixShape(rows, columns);
     if (packedRGBA.length < requiredSize) {
-        throw new Error("packedRGBA length (" + packedRGBA.length + ") must be >= " + requiredSize);
+        throw new Error("packedRGBA length (" + packedRGBA.length + ") must be >=\n        " + requiredSize);
     }
-    var _a = getPackedMatrixTextureShapeWidthHeight(rows, columns), textureWidth = _a[0], textureHeight = _a[1];
     var oddWidth = (columns % 2) === 1;
     var oddHeight = (rows % 2) === 1;
     var widthInFullBlocks = Math.floor(columns / 2);
     var heightInFullBlocks = Math.floor(rows / 2);
-    {
-        var dstStride = (oddWidth ? 4 : 0);
-        var oneRow = columns;
-        var dst = 0;
-        for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
-            var matrixSrcRow = (blockY * 2 * columns);
-            for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
-                var matrixSrcCol = blockX * 2;
-                var src = matrixSrcRow + matrixSrcCol;
-                packedRGBA[dst] = matrix[src];
-                packedRGBA[dst + 1] = matrix[src + 1];
-                packedRGBA[dst + 2] = matrix[src + oneRow];
-                packedRGBA[dst + 3] = matrix[src + oneRow + 1];
-                dst += 4;
+    var texelsPerRow = Math.ceil(columns / 2);
+    var texelsPerBatch = texelsPerRow * Math.ceil(rows / 2);
+    var flattenedMatrixSize = util.nearestLargerEven(rows) * util.nearestLargerEven(columns);
+    for (var batch = 0; batch < batches; batch++) {
+        var sourceOffset = batch * rows * columns;
+        var batchOffset = batch * flattenedMatrixSize;
+        {
+            var dstStride = (oddWidth ? 4 : 0);
+            var oneRow = columns;
+            var dst = batchOffset;
+            for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
+                var matrixSrcRow = (blockY * 2 * columns);
+                for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
+                    var matrixSrcCol = blockX * 2;
+                    var src = sourceOffset + matrixSrcRow + matrixSrcCol;
+                    packedRGBA[dst] = matrix[src];
+                    packedRGBA[dst + 1] = matrix[src + 1];
+                    packedRGBA[dst + 2] = matrix[src + oneRow];
+                    packedRGBA[dst + 3] = matrix[src + oneRow + 1];
+                    dst += 4;
+                }
+                dst += dstStride;
             }
-            dst += dstStride;
         }
-    }
-    if (oddWidth) {
-        var src = columns - 1;
-        var dst = (textureWidth - 1) * 4;
-        var srcStride = 2 * columns;
-        var dstStride = textureWidth * 4;
-        for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
-            packedRGBA[dst] = matrix[src];
-            packedRGBA[dst + 2] = matrix[src + columns];
-            src += srcStride;
-            dst += dstStride;
+        if (oddWidth) {
+            var src = sourceOffset + columns - 1;
+            var dst = batchOffset + (texelsPerRow - 1) * 4;
+            var srcStride = 2 * columns;
+            var dstStride = texelsPerRow * 4;
+            for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
+                packedRGBA[dst] = matrix[src];
+                packedRGBA[dst + 2] = matrix[src + columns];
+                src += srcStride;
+                dst += dstStride;
+            }
         }
-    }
-    if (oddHeight) {
-        var src = (rows - 1) * columns;
-        var dst = (textureHeight - 1) * textureWidth * 4;
-        for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
-            packedRGBA[dst++] = matrix[src++];
-            packedRGBA[dst++] = matrix[src++];
-            dst += 2;
+        if (oddHeight) {
+            var src = sourceOffset + (rows - 1) * columns;
+            var dst = batchOffset + (texelsPerBatch - texelsPerRow) * 4;
+            for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
+                packedRGBA[dst++] = matrix[src++];
+                packedRGBA[dst++] = matrix[src++];
+                dst += 2;
+            }
+            if (oddWidth && oddHeight) {
+                packedRGBA[batchOffset + flattenedMatrixSize - 4] = matrix[src];
+            }
         }
-    }
-    if (oddWidth && oddHeight) {
-        packedRGBA[packedRGBA.length - 4] = matrix[matrix.length - 1];
     }
     return packedRGBA;
 }
 exports.encodeMatrixToPackedRGBA = encodeMatrixToPackedRGBA;
-function decodeMatrixFromPackedRGBA(packedRGBA, rows, columns, matrix) {
+function decodeMatrixFromPackedRGBA(packedRGBA, batches, rows, columns, matrix) {
     var requiredSize = rows * columns;
-    if (requiredSize < matrix.length) {
+    if (matrix.length < requiredSize) {
         throw new Error("matrix length (" + matrix.length + ") must be >= " + requiredSize);
     }
     var oddWidth = (columns % 2) === 1;
     var oddHeight = (rows % 2) === 1;
     var widthInFullBlocks = Math.floor(columns / 2);
     var heightInFullBlocks = Math.floor(rows / 2);
-    var _a = getPackedMatrixTextureShapeWidthHeight(rows, columns), textureWidth = _a[0], textureHeight = _a[1];
-    {
-        var srcStride = oddWidth ? 4 : 0;
-        var dstStride = columns + (oddWidth ? 1 : 0);
-        var src = 0;
-        var dstRow1 = 0;
-        var dstRow2 = columns;
-        for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
-            for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
-                matrix[dstRow1++] = packedRGBA[src++];
-                matrix[dstRow1++] = packedRGBA[src++];
-                matrix[dstRow2++] = packedRGBA[src++];
-                matrix[dstRow2++] = packedRGBA[src++];
+    var texelsPerRow = Math.ceil(columns / 2);
+    var texelsPerBatch = texelsPerRow * Math.ceil(rows / 2);
+    var flattenedMatrixSize = util.nearestLargerEven(rows) * util.nearestLargerEven(columns);
+    for (var batch = 0; batch < batches; batch++) {
+        var batchOffset = batch * rows * columns;
+        var sourceOffset = batch * flattenedMatrixSize;
+        {
+            var srcStride = oddWidth ? 4 : 0;
+            var dstStride = columns + (oddWidth ? 1 : 0);
+            var src = sourceOffset;
+            var dstRow1 = batchOffset;
+            var dstRow2 = batchOffset + columns;
+            for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
+                for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
+                    matrix[dstRow1++] = packedRGBA[src++];
+                    matrix[dstRow1++] = packedRGBA[src++];
+                    matrix[dstRow2++] = packedRGBA[src++];
+                    matrix[dstRow2++] = packedRGBA[src++];
+                }
+                src += srcStride;
+                dstRow1 += dstStride;
+                dstRow2 += dstStride;
             }
-            src += srcStride;
-            dstRow1 += dstStride;
-            dstRow2 += dstStride;
         }
-    }
-    if (oddWidth) {
-        var src = (textureWidth - 1) * 4;
-        var dst = columns - 1;
-        var srcStride = textureWidth * 4;
-        var dstStride = 2 * columns;
-        for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
-            matrix[dst] = packedRGBA[src];
-            matrix[dst + columns] = packedRGBA[src + 2];
-            src += srcStride;
-            dst += dstStride;
+        if (oddWidth) {
+            var src = sourceOffset + (texelsPerRow - 1) * 4;
+            var dst = batchOffset + columns - 1;
+            var srcStride = texelsPerRow * 4;
+            var dstStride = 2 * columns;
+            for (var blockY = 0; blockY < heightInFullBlocks; ++blockY) {
+                matrix[dst] = packedRGBA[src];
+                matrix[dst + columns] = packedRGBA[src + 2];
+                src += srcStride;
+                dst += dstStride;
+            }
         }
-    }
-    if (oddHeight) {
-        var src = (textureHeight - 1) * textureWidth * 4;
-        var dst = (rows - 1) * columns;
-        for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
-            matrix[dst++] = packedRGBA[src++];
-            matrix[dst++] = packedRGBA[src++];
-            src += 2;
+        if (oddHeight) {
+            var src = sourceOffset + (texelsPerBatch - texelsPerRow) * 4;
+            var dst = batchOffset + (rows - 1) * columns;
+            for (var blockX = 0; blockX < widthInFullBlocks; ++blockX) {
+                matrix[dst++] = packedRGBA[src++];
+                matrix[dst++] = packedRGBA[src++];
+                src += 2;
+            }
+            if (oddWidth) {
+                matrix[batchOffset + (rows * columns) - 1] = packedRGBA[src];
+            }
         }
-    }
-    if (oddWidth && oddHeight) {
-        matrix[matrix.length - 1] = packedRGBA[packedRGBA.length - 4];
     }
     return matrix;
 }
 exports.decodeMatrixFromPackedRGBA = decodeMatrixFromPackedRGBA;
 
-},{}],67:[function(require,module,exports){
+},{"../../util":157}],80:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../../environment");
@@ -9055,9 +10616,9 @@ var TextureManager = (function () {
         this.logEnabled = false;
         this.usedTextures = {};
     }
-    TextureManager.prototype.acquireTexture = function (shapeRC, usage) {
-        var physicalTexType = getPhysicalFromLogicalTextureType(usage);
-        var shapeKey = getKeyFromTextureShape(shapeRC, physicalTexType);
+    TextureManager.prototype.acquireTexture = function (shapeRC, usage, isPacked) {
+        var physicalTexType = getPhysicalFromLogicalTextureType(usage, isPacked);
+        var shapeKey = getKeyFromTextureShape(shapeRC, physicalTexType, isPacked);
         if (!(shapeKey in this.freeTextures)) {
             this.freeTextures[shapeKey] = [];
         }
@@ -9075,24 +10636,34 @@ var TextureManager = (function () {
         this.numUsedTextures++;
         this.log();
         var newTexture;
-        if (physicalTexType === tex_util_1.PhysicalTextureType.FLOAT32) {
+        if (physicalTexType === tex_util_1.PhysicalTextureType.PACKED_2X2_FLOAT32) {
+            newTexture = this.gpgpu.createPackedMatrixTexture(shapeRC[0], shapeRC[1]);
+        }
+        else if (physicalTexType === tex_util_1.PhysicalTextureType.PACKED_2X2_FLOAT16) {
+            newTexture =
+                this.gpgpu.createFloat16PackedMatrixTexture(shapeRC[0], shapeRC[1]);
+        }
+        else if (physicalTexType === tex_util_1.PhysicalTextureType.UNPACKED_FLOAT32) {
             newTexture =
                 this.gpgpu.createFloat32MatrixTexture(shapeRC[0], shapeRC[1]);
         }
-        else if (physicalTexType === tex_util_1.PhysicalTextureType.FLOAT16) {
+        else if (physicalTexType === tex_util_1.PhysicalTextureType.UNPACKED_FLOAT16) {
             newTexture =
                 this.gpgpu.createFloat16MatrixTexture(shapeRC[0], shapeRC[1]);
         }
-        else if (physicalTexType === tex_util_1.PhysicalTextureType.UNSIGNED_BYTE) {
+        else if (physicalTexType === tex_util_1.PhysicalTextureType.PACKED_4X1_UNSIGNED_BYTE) {
             newTexture =
                 this.gpgpu.createUnsignedBytesMatrixTexture(shapeRC[0], shapeRC[1]);
         }
         this.usedTextures[shapeKey].push(newTexture);
         return newTexture;
     };
-    TextureManager.prototype.releaseTexture = function (texture, shape, logicalTexType) {
-        var physicalTexType = getPhysicalFromLogicalTextureType(logicalTexType);
-        var shapeKey = getKeyFromTextureShape(shape, physicalTexType);
+    TextureManager.prototype.releaseTexture = function (texture, shape, logicalTexType, isPacked) {
+        if (this.freeTextures == null) {
+            return;
+        }
+        var physicalTexType = getPhysicalFromLogicalTextureType(logicalTexType, isPacked);
+        var shapeKey = getKeyFromTextureShape(shape, physicalTexType, isPacked);
         if (!(shapeKey in this.freeTextures)) {
             this.freeTextures[shapeKey] = [];
         }
@@ -9144,26 +10715,31 @@ var TextureManager = (function () {
     return TextureManager;
 }());
 exports.TextureManager = TextureManager;
-function getPhysicalFromLogicalTextureType(logicalTexType) {
-    if (logicalTexType === tex_util_1.TextureUsage.DOWNLOAD ||
+function getPhysicalFromLogicalTextureType(logicalTexType, isPacked) {
+    if (isPacked) {
+        return environment_1.ENV.get('WEBGL_RENDER_FLOAT32_ENABLED') ?
+            tex_util_1.PhysicalTextureType.PACKED_2X2_FLOAT32 :
+            tex_util_1.PhysicalTextureType.PACKED_2X2_FLOAT16;
+    }
+    else if (logicalTexType === tex_util_1.TextureUsage.DOWNLOAD ||
         logicalTexType === tex_util_1.TextureUsage.PIXELS) {
-        return tex_util_1.PhysicalTextureType.UNSIGNED_BYTE;
+        return tex_util_1.PhysicalTextureType.PACKED_4X1_UNSIGNED_BYTE;
     }
     else if (logicalTexType === tex_util_1.TextureUsage.UPLOAD) {
-        return tex_util_1.PhysicalTextureType.FLOAT32;
+        return tex_util_1.PhysicalTextureType.UNPACKED_FLOAT32;
     }
     else if (logicalTexType === tex_util_1.TextureUsage.RENDER) {
         return environment_1.ENV.get('WEBGL_RENDER_FLOAT32_ENABLED') ?
-            tex_util_1.PhysicalTextureType.FLOAT32 :
-            tex_util_1.PhysicalTextureType.FLOAT16;
+            tex_util_1.PhysicalTextureType.UNPACKED_FLOAT32 :
+            tex_util_1.PhysicalTextureType.UNPACKED_FLOAT16;
     }
     throw new Error("Unknown logical texture type " + logicalTexType);
 }
-function getKeyFromTextureShape(shapeRowsCol, physicalTexType) {
-    return shapeRowsCol[0] + "_" + shapeRowsCol[1] + "_" + physicalTexType;
+function getKeyFromTextureShape(shapeRowsCol, physicalTexType, isPacked) {
+    return shapeRowsCol[0] + "_" + shapeRowsCol[1] + "_" + physicalTexType + "_" + isPacked;
 }
 
-},{"../../environment":4,"./tex_util":66}],68:[function(require,module,exports){
+},{"../../environment":5,"./tex_util":79}],81:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -9199,7 +10775,7 @@ function getSourceCoords(aShape) {
     return sourceCoords.join();
 }
 
-},{"./shader_compiler":63}],69:[function(require,module,exports){
+},{"./shader_compiler":75}],82:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var shader_compiler_1 = require("./shader_compiler");
@@ -9232,7 +10808,7 @@ function getSwitchedCoords(newDim) {
     return switchedCoords.join();
 }
 
-},{"./shader_compiler":63}],70:[function(require,module,exports){
+},{"./shader_compiler":75}],83:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var erf_util = require("../../ops/erf_util");
@@ -9299,35 +10875,33 @@ exports.RECIPROCAL = "return 1.0 / x;";
 exports.LOGICAL_NOT = "return float(!(x >= 1.0));";
 exports.TO_INT = "return float(int(x));";
 
-},{"../../ops/erf_util":86,"../../ops/selu_util":106}],71:[function(require,module,exports){
+},{"../../ops/erf_util":102,"../../ops/selu_util":126}],84:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-var MAX_TEXTURE_SIZE = null;
-var util = require("../../util");
+var packing_util_1 = require("../packing_util");
+var shader_compiler_1 = require("./shader_compiler");
+var UnpackProgram = (function () {
+    function UnpackProgram(outputShape) {
+        this.variableNames = ['A'];
+        this.usesPackedTextures = true;
+        this.outputShape = outputShape;
+        var rank = outputShape.length;
+        var channels = packing_util_1.getChannels('rc', rank);
+        var dtype = shader_compiler_1.getCoordsDataType(rank);
+        var sourceCoords = packing_util_1.getSourceCoords(rank, channels);
+        var innerDims = channels.slice(-2);
+        var coords = rank === 1 ? 'rc' : "vec2(" + innerDims.join(',') + ")";
+        this.userCode = "\n      void main() {\n        " + dtype + " rc = getOutputCoords();\n        vec4 packedInput = getA(" + sourceCoords + ");\n\n        setOutput(getChannel(packedInput, " + coords + "));\n      }\n    ";
+    }
+    return UnpackProgram;
+}());
+exports.UnpackProgram = UnpackProgram;
+
+},{"../packing_util":27,"./shader_compiler":75}],85:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../../environment");
-function createWebGLRenderingContext(attributes) {
-    var canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    return createWebGLRenderingContextFromCanvas(canvas, attributes);
-}
-exports.createWebGLRenderingContext = createWebGLRenderingContext;
-function createWebGLRenderingContextFromCanvas(canvas, attributes) {
-    var gl;
-    var webglVersion = environment_1.ENV.get('WEBGL_VERSION');
-    if (webglVersion === 2) {
-        gl = canvas.getContext('webgl2', attributes);
-    }
-    else if (webglVersion === 1) {
-        gl = (canvas.getContext('webgl', attributes) ||
-            canvas.getContext('experimental-webgl', attributes));
-    }
-    if (webglVersion === 0 || gl == null) {
-        throw new Error('This browser does not support WebGL.');
-    }
-    return gl;
-}
-exports.createWebGLRenderingContextFromCanvas = createWebGLRenderingContextFromCanvas;
+var util = require("../../util");
 function callAndCheck(gl, func) {
     var returnValue = func();
     checkWebGLError(gl);
@@ -9455,15 +11029,6 @@ function createStaticIndexBuffer(gl, data) {
     return buffer;
 }
 exports.createStaticIndexBuffer = createStaticIndexBuffer;
-function queryMaxTextureSize(gl) {
-    if (MAX_TEXTURE_SIZE != null) {
-        return MAX_TEXTURE_SIZE;
-    }
-    MAX_TEXTURE_SIZE =
-        callAndCheck(gl, function () { return gl.getParameter(gl.MAX_TEXTURE_SIZE); });
-    return MAX_TEXTURE_SIZE;
-}
-exports.queryMaxTextureSize = queryMaxTextureSize;
 function getNumChannels() {
     if (environment_1.ENV.get('WEBGL_VERSION') === 2) {
         return 1;
@@ -9475,8 +11040,8 @@ function createTexture(gl) {
     return throwIfNull(gl, function () { return gl.createTexture(); }, 'Unable to create WebGLTexture.');
 }
 exports.createTexture = createTexture;
-function validateTextureSize(gl, width, height) {
-    var maxTextureSize = queryMaxTextureSize(gl);
+function validateTextureSize(width, height) {
+    var maxTextureSize = environment_1.ENV.get('WEBGL_MAX_TEXTURE_SIZE');
     if ((width <= 0) || (height <= 0)) {
         var requested = "[" + width + "x" + height + "]";
         throw new Error('Requested texture size ' + requested + ' is invalid.');
@@ -9582,12 +11147,19 @@ function validateTextureUnit(gl, textureUnit) {
         throw new Error("textureUnit must be in " + textureUnitRange + ".");
     }
 }
-function getTextureShapeFromLogicalShape(gl, logShape) {
+function getTextureShapeFromLogicalShape(logShape, isPacked) {
+    if (isPacked === void 0) { isPacked = false; }
+    var maxTexSize = environment_1.ENV.get('WEBGL_MAX_TEXTURE_SIZE');
+    if (isPacked) {
+        maxTexSize = maxTexSize * 2;
+        logShape = logShape.map(function (d, i) { return i >= logShape.length - 2 ?
+            util.nearestLargerEven(logShape[i]) :
+            logShape[i]; });
+    }
     if (logShape.length !== 2) {
         var squeezeResult = util.squeezeShape(logShape);
         logShape = squeezeResult.newShape;
     }
-    var maxTexSize = queryMaxTextureSize(gl);
     var size = util.sizeFromShape(logShape);
     if (logShape.length <= 1 && size <= maxTexSize) {
         return [size, 1];
@@ -9596,9 +11168,18 @@ function getTextureShapeFromLogicalShape(gl, logShape) {
         logShape[1] <= maxTexSize) {
         return logShape;
     }
+    else if (logShape.length === 3 && logShape[0] * logShape[1] <= maxTexSize &&
+        logShape[2] <= maxTexSize) {
+        return [logShape[0] * logShape[1], logShape[2]];
+    }
     else if (logShape.length === 3 && logShape[0] <= maxTexSize &&
         logShape[1] * logShape[2] <= maxTexSize) {
         return [logShape[0], logShape[1] * logShape[2]];
+    }
+    else if (logShape.length === 4 &&
+        logShape[0] * logShape[1] * logShape[2] <= maxTexSize &&
+        logShape[3] <= maxTexSize) {
+        return [logShape[0] * logShape[1] * logShape[2], logShape[3]];
     }
     else if (logShape.length === 4 && logShape[0] <= maxTexSize &&
         logShape[1] * logShape[2] * logShape[3] <= maxTexSize) {
@@ -9609,8 +11190,42 @@ function getTextureShapeFromLogicalShape(gl, logShape) {
     }
 }
 exports.getTextureShapeFromLogicalShape = getTextureShapeFromLogicalShape;
+function isEven(n) {
+    return n % 2 === 0;
+}
+function isReshapeFree(shape1, shape2) {
+    shape1 = shape1.slice(-2);
+    shape2 = shape2.slice(-2);
+    if (util.arraysEqual(shape1, shape2)) {
+        return true;
+    }
+    if (!shape1.length || !shape2.length) {
+        return true;
+    }
+    if (shape1[0] === 0 || shape1[1] === 0 || shape2[0] === 0 ||
+        shape2[1] === 0) {
+        return true;
+    }
+    if (shape1.length !== shape2.length) {
+        if (util.arraysEqual(util.squeezeShape(shape1).newShape, util.squeezeShape(shape2).newShape)) {
+            return true;
+        }
+    }
+    else {
+        if (isEven(shape1[0]) && isEven(shape2[0])) {
+            if (isEven(shape1[1]) && isEven(shape2[1])) {
+                return true;
+            }
+            if (shape1[1] === shape2[1]) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+exports.isReshapeFree = isReshapeFree;
 
-},{"../../environment":4,"../../util":134}],72:[function(require,module,exports){
+},{"../../environment":5,"../../util":157}],86:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var array_ops_1 = require("../ops/array_ops");
@@ -9632,7 +11247,7 @@ function whereImpl(condShape, condVals) {
 }
 exports.whereImpl = whereImpl;
 
-},{"../ops/array_ops":74}],73:[function(require,module,exports){
+},{"../ops/array_ops":89}],87:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
@@ -9657,7 +11272,13 @@ function log() {
 }
 exports.log = log;
 
-},{"./environment":4}],74:[function(require,module,exports){
+},{"./environment":5}],88:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var confusion_matrix_1 = require("./ops/confusion_matrix");
+exports.confusionMatrix = confusion_matrix_1.confusionMatrix;
+
+},{"./ops/confusion_matrix":99}],89:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -10056,9 +11677,10 @@ function stack_(tensors, axis) {
 function batchToSpaceND_(x, blockShape, crops) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'batchToSpaceND');
     var prod = blockShape.reduce(function (a, b) { return a * b; });
-    util.assert($x.rank >= 1 + blockShape.length, "input rank should be > than [blockShape] but got " + $x.rank);
-    util.assert(crops.length === blockShape.length, "crops.shape[0] must be equal to [blockShape] but got " + crops.length);
-    util.assert($x.shape[0] % prod === 0, "input tensor batch must be divisible by prod( blockShape )");
+    util.assert($x.rank >= 1 + blockShape.length, "input rank is " + $x.rank + " but should be > than blockShape.length " + blockShape.length);
+    util.assert(crops.length === blockShape.length, "crops.length is " + crops.length + " but should be equal to blockShape.length  " + blockShape.length);
+    util.assert($x.shape[0] % prod === 0, "input tensor batch is " + $x.shape[0] + " but is not divisible by the product of " +
+        ("the elements of blockShape " + blockShape.join(' * ') + " === " + prod));
     var grad = function (dy) {
         return { $x: function () { return dy.spaceToBatchND(blockShape, crops); } };
     };
@@ -10149,6 +11771,44 @@ function depthToSpace_(x, blockSize, dataFormat) {
     util.assert((inputDepth % (blockSize * blockSize) === 0), "Dimension size must be evenly divisible by " + blockSize * blockSize + " but is " + inputDepth + " for depthToSpace with input shape " + $x.shape);
     return environment_1.ENV.engine.runKernel(function (backend) { return backend.depthToSpace($x, blockSize, dataFormat); }, { $x: $x });
 }
+function setdiff1dAsync_(x, y) {
+    return __awaiter(this, void 0, void 0, function () {
+        var $x, $y, xVals, yVals, ySet, outputSize, i, buffer, indices, i, p;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    $x = tensor_util_env_1.convertToTensor(x, 'x', 'setdiff1d');
+                    $y = tensor_util_env_1.convertToTensor(y, 'y', 'setdiff1d');
+                    util.assert($x.dtype === $y.dtype, "x and y should have the same dtype, but got x (" + $x.dtype + ") and y (" + $y.dtype + ").");
+                    util.assert($x.rank === 1, "x should be 1D tensor, but got x (" + $x.shape + ").");
+                    util.assert($y.rank === 1, "y should be 1D tensor, but got y (" + $y.shape + ").");
+                    return [4, $x.data()];
+                case 1:
+                    xVals = _a.sent();
+                    return [4, $y.data()];
+                case 2:
+                    yVals = _a.sent();
+                    ySet = new Set(yVals);
+                    outputSize = 0;
+                    for (i = 0; i < xVals.length; i++) {
+                        if (!ySet.has(xVals[i])) {
+                            outputSize++;
+                        }
+                    }
+                    buffer = new tensor_1.TensorBuffer([outputSize], $x.dtype);
+                    indices = new tensor_1.TensorBuffer([outputSize], 'int32');
+                    for (i = 0, p = 0; i < xVals.length; i++) {
+                        if (!ySet.has(xVals[i])) {
+                            buffer.values[p] = xVals[i];
+                            indices.values[p] = i;
+                            p++;
+                        }
+                    }
+                    return [2, [buffer.toTensor(), indices.toTensor()]];
+            }
+        });
+    });
+}
 function buffer(shape, dtype, values) {
     if (dtype === void 0) { dtype = 'float32'; }
     return new tensor_1.TensorBuffer(shape, dtype, values);
@@ -10184,8 +11844,9 @@ exports.stack = operation_1.op({ stack_: stack_ });
 exports.tile = operation_1.op({ tile_: tile_ });
 exports.truncatedNormal = operation_1.op({ truncatedNormal_: truncatedNormal_ });
 exports.unstack = operation_1.op({ unstack_: unstack_ });
+exports.setdiff1dAsync = setdiff1dAsync_;
 
-},{"../environment":4,"../tensor":127,"../tensor_util_env":130,"../util":134,"./axis_util":76,"./concat_split":82,"./operation":96,"./rand":99,"./tensor_ops":111}],75:[function(require,module,exports){
+},{"../environment":5,"../tensor":150,"../tensor_util_env":153,"../util":157,"./axis_util":91,"./concat_split":97,"./operation":114,"./rand":117,"./tensor_ops":134}],90:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function getReshaped(inputShape, blockShape, prod, batchToSpace) {
@@ -10283,7 +11944,7 @@ function getSliceSize(uncroppedShape, crops, blockShape) {
 }
 exports.getSliceSize = getSliceSize;
 
-},{}],76:[function(require,module,exports){
+},{}],91:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -10373,7 +12034,7 @@ function getInnerMostAxes(numAxes, rank) {
 }
 exports.getInnerMostAxes = getInnerMostAxes;
 
-},{"../util":134}],77:[function(require,module,exports){
+},{"../util":157}],92:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -10593,7 +12254,7 @@ exports.batchNormalization3d = operation_1.op({ batchNormalization3d_: batchNorm
 exports.batchNormalization4d = operation_1.op({ batchNormalization4d_: batchNormalization4d_ });
 exports.batchNormalization = operation_1.op({ batchNormalization_: batchNormalization_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./array_ops":74,"./broadcast_util":79,"./operation":96,"./tensor_ops":111,"./unary_ops":114}],78:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./array_ops":89,"./broadcast_util":94,"./operation":114,"./tensor_ops":134,"./unary_ops":137}],93:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -10700,7 +12361,8 @@ function pow_(base, exp) {
     var grad = function (dy, saved) {
         var y = saved[0];
         var derBase = function () {
-            var res = dy.mul($exp.toFloat().mul(y.div($base)));
+            var expFloat = $exp.toFloat();
+            var res = dy.mul(expFloat.mul($base.pow(expFloat.sub(tensor_ops_1.scalar(1)))));
             var reduceAxes = broadcast_util.getReductionAxes($base.shape, outShape);
             if (reduceAxes.length > 0) {
                 res = res.sum(reduceAxes);
@@ -10959,7 +12621,7 @@ exports.squaredDifferenceStrict = operation_1.op({ squaredDifferenceStrict_: squ
 exports.sub = operation_1.op({ sub_: sub_ });
 exports.subStrict = operation_1.op({ subStrict_: subStrict_ });
 
-},{"../environment":4,"../tensor_util":129,"../tensor_util_env":130,"../types":133,"../util":134,"./broadcast_util":79,"./operation":96,"./tensor_ops":111,"./unary_ops":114}],79:[function(require,module,exports){
+},{"../environment":5,"../tensor_util":152,"../tensor_util_env":153,"../types":156,"../util":157,"./broadcast_util":94,"./operation":114,"./tensor_ops":134,"./unary_ops":137}],94:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 function getBroadcastDims(inShape, outShape) {
@@ -11029,7 +12691,7 @@ function assertAndGetBroadcastShape(shapeA, shapeB) {
 }
 exports.assertAndGetBroadcastShape = assertAndGetBroadcastShape;
 
-},{}],80:[function(require,module,exports){
+},{}],95:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -11133,7 +12795,7 @@ exports.lessStrict = operation_1.op({ lessStrict_: lessStrict_ });
 exports.notEqual = operation_1.op({ notEqual_: notEqual_ });
 exports.notEqualStrict = operation_1.op({ notEqualStrict_: notEqualStrict_ });
 
-},{"../environment":4,"../tensor_util":129,"../tensor_util_env":130,"../util":134,"./broadcast_util":79,"./operation":96,"./tensor_ops":111}],81:[function(require,module,exports){
+},{"../environment":5,"../tensor_util":152,"../tensor_util_env":153,"../util":157,"./broadcast_util":94,"./operation":114,"./tensor_ops":134}],96:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -11159,7 +12821,7 @@ exports.complex = operation_1.op({ complex_: complex_ });
 exports.real = operation_1.op({ real_: real_ });
 exports.imag = operation_1.op({ imag_: imag_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./operation":96}],82:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./operation":114}],97:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -11227,7 +12889,7 @@ exports.concat3d = operation_1.op({ concat3d_: concat3d_ });
 exports.concat4d = operation_1.op({ concat4d_: concat4d_ });
 exports.split = operation_1.op({ split_: split_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./axis_util":76,"./concat_util":83,"./operation":96,"./tensor_ops":111}],83:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./axis_util":91,"./concat_util":98,"./operation":114,"./tensor_ops":134}],98:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -11257,13 +12919,40 @@ function computeOutShape(shapes, axis) {
 }
 exports.computeOutShape = computeOutShape;
 
-},{"../util":134}],84:[function(require,module,exports){
+},{"../util":157}],99:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var tensor_util_env_1 = require("../tensor_util_env");
+var util = require("../util");
+var array_ops_1 = require("./array_ops");
+var operation_1 = require("./operation");
+function confusionMatrix_(labels, predictions, numClasses) {
+    var $labels = tensor_util_env_1.convertToTensor(labels, 'label', 'confusionMatrix', 'int32');
+    var $predictions = tensor_util_env_1.convertToTensor(predictions, 'label', 'confusionMatrix', 'int32');
+    util.assert(numClasses == null || numClasses > 0 && Number.isInteger(numClasses), "If provided, numClasses must be a positive integer, " +
+        ("but got " + numClasses));
+    util.assert($labels.rank === 1, "Expected the rank of labels to be 1, but got " + $labels.rank);
+    util.assert($predictions.rank === 1, "Expected the rank of predictions to be 1, " +
+        ("but got " + $predictions.rank));
+    util.assert($labels.shape[0] === $predictions.shape[0], "Mismatch in the number of examples: " +
+        ($labels.shape[0] + " vs. " + $predictions.shape[0] + ". ") +
+        "Labels and predictions should have the same number of elements.");
+    util.assert(numClasses > 0 && Number.isInteger(numClasses), "numClasses is required to be a positive integer, but got " + numClasses);
+    var oneHotLabels = array_ops_1.oneHot($labels.asType('int32'), numClasses);
+    var oneHotPredictions = array_ops_1.oneHot($predictions.asType('int32'), numClasses);
+    return oneHotLabels.transpose().matMul(oneHotPredictions).asType('int32');
+}
+exports.confusionMatrix_ = confusionMatrix_;
+exports.confusionMatrix = operation_1.op({ confusionMatrix_: confusionMatrix_ });
+
+},{"../tensor_util_env":153,"../util":157,"./array_ops":89,"./operation":114}],100:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
 var tensor_util_env_1 = require("../tensor_util_env");
 var util = require("../util");
 var conv_util = require("./conv_util");
+var matmul_1 = require("./matmul");
 var operation_1 = require("./operation");
 function conv1d_(x, filter, stride, pad, dataFormat, dilation, dimRoundingMode) {
     if (dataFormat === void 0) { dataFormat = 'NWC'; }
@@ -11285,7 +12974,7 @@ function conv1d_(x, filter, stride, pad, dataFormat, dilation, dimRoundingMode) 
     }
     util.assert(x3D.shape[2] === $filter.shape[1], "Error in conv1d: depth of input (" + x3D.shape[2] + ") must match " +
         ("input depth for filter " + $filter.shape[1] + "."));
-    util.assert(eitherStridesOrDilationsAreOne(stride, dilation), 'Error in conv1D: Either stride or dilation must be 1. ' +
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(stride, dilation), 'Error in conv1D: Either stride or dilation must be 1. ' +
         ("Got stride " + stride + " and dilation '" + dilation + "'"));
     util.assert(dataFormat === 'NWC', "Error in conv1d: got dataFormat of " + dataFormat + " but only NWC is currently supported.");
     var filter4D = $filter.as4D(1, $filter.shape[0], $filter.shape[1], $filter.shape[2]);
@@ -11319,19 +13008,30 @@ function conv2d_(x, filter, strides, pad, dataFormat, dilations, dimRoundingMode
     }
     util.assert(x4D.shape[3] === $filter.shape[2], "Error in conv2d: depth of input (" + x4D.shape[3] + ") must match " +
         ("input depth for filter " + $filter.shape[2] + "."));
-    util.assert(eitherStridesOrDilationsAreOne(strides, dilations), 'Error in conv2D: Either strides or dilations must be 1. ' +
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in conv2D: Either strides or dilations must be 1. ' +
         ("Got strides " + strides + " and dilations '" + dilations + "'"));
     util.assert(dataFormat === 'NHWC', "Error in conv2d: got dataFormat of " + dataFormat + " but only NHWC is currently supported.");
     var convInfo = conv_util.computeConv2DInfo(x4D.shape, $filter.shape, strides, dilations, pad, dimRoundingMode);
-    var grad = function (dy) {
-        util.assert(tupleValuesAreOne(dilations), 'Error in gradient of conv2D: dilation rates greater than 1 are not' +
-            ("yet supported in gradients. Got dilations '" + dilations + "'"));
-        return {
-            x: function () { return conv2dDerInput_(x4D.shape, dy, $filter, strides, pad); },
-            $filter: function () { return conv2dDerFilter_(x4D, dy, $filter.shape, strides, pad); }
+    var res;
+    if (convInfo.filterHeight === 1 && convInfo.filterWidth === 1 &&
+        convInfo.dilationHeight === 1 && convInfo.dilationWidth === 1 &&
+        convInfo.strideHeight === 1 && convInfo.strideWidth === 1 &&
+        (convInfo.padInfo.type === 'SAME' || convInfo.padInfo.type === 'VALID')) {
+        var x2d = x4D.reshape([-1, convInfo.inChannels]);
+        var w2d = $filter.reshape([convInfo.inChannels, convInfo.outChannels]);
+        res = matmul_1.matMul(x2d, w2d).reshape(convInfo.outShape);
+    }
+    else {
+        var grad = function (dy) {
+            util.assert(conv_util.tupleValuesAreOne(dilations), 'Error in gradient of conv2D: dilation rates greater than 1 are not' +
+                ("yet supported in gradients. Got dilations '" + dilations + "'"));
+            return {
+                x: function () { return conv2dDerInput_(x4D.shape, dy, $filter, strides, pad); },
+                $filter: function () { return conv2dDerFilter_(x4D, dy, $filter.shape, strides, pad); }
+            };
         };
-    };
-    var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.conv2d(x4D, $filter, convInfo); }, { x: x4D, $filter: $filter }, grad);
+        res = environment_1.ENV.engine.runKernel(function (backend) { return backend.conv2d(x4D, $filter, convInfo); }, { x: x4D, $filter: $filter }, grad);
+    }
     if (reshapedTo4D) {
         return res.as3D(res.shape[1], res.shape[2], res.shape[3]);
     }
@@ -11365,8 +13065,15 @@ function conv2dDerInput_(xShape, dy, filter, strides, pad, dimRoundingMode) {
             ("dimRoundingMode " + dimRoundingMode + " but got pad " + pad + "."));
     }
     var dilations = 1;
+    var grad = function (ddx) {
+        var dataFormat = 'NHWC';
+        return {
+            dy4D: function () { return exports.conv2d(ddx, filter, strides, pad, dataFormat, dilations, dimRoundingMode); },
+            filter: function () { return exports.conv2dDerFilter(ddx, dy4D, filter.shape, strides, pad, dimRoundingMode); }
+        };
+    };
     var convInfo = conv_util.computeConv2DInfo(xShape4D, filter.shape, strides, dilations, pad, dimRoundingMode);
-    var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.conv2dDerInput(dy4D, filter, convInfo); }, { dy4D: dy4D });
+    var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.conv2dDerInput(dy4D, filter, convInfo); }, { dy4D: dy4D, filter: filter }, grad);
     if (reshapedTo4D) {
         return res.as3D(res.shape[1], res.shape[2], res.shape[3]);
     }
@@ -11425,7 +13132,7 @@ function depthwiseConv2d_(x, filter, strides, pad, dataFormat, dilations, dimRou
     if (dilations == null) {
         dilations = [1, 1];
     }
-    util.assert(eitherStridesOrDilationsAreOne(strides, dilations), 'Error in depthwiseConv2d: Either strides or dilations must be 1. ' +
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in depthwiseConv2d: Either strides or dilations must be 1. ' +
         ("Got strides " + strides + " and dilations '" + dilations + "'"));
     if (dimRoundingMode != null) {
         util.assert(util.isInt(pad), "Error in depthwiseConv2d: pad must be an integer when using, " +
@@ -11433,7 +13140,7 @@ function depthwiseConv2d_(x, filter, strides, pad, dataFormat, dilations, dimRou
     }
     var convInfo = conv_util.computeConv2DInfo(x4D.shape, $filter.shape, strides, dilations, pad, dimRoundingMode, true);
     var grad = function (dy) {
-        util.assert(tupleValuesAreOne(dilations), 'Error in gradient of depthwiseConv2d: dilation rates greater than ' +
+        util.assert(conv_util.tupleValuesAreOne(dilations), 'Error in gradient of depthwiseConv2d: dilation rates greater than ' +
             ("1 are not yet supported. Got dilations '" + dilations + "'"));
         return {
             x: function () { return depthwiseConv2dDerInput(x4D.shape, dy, $filter, convInfo); },
@@ -11485,16 +13192,6 @@ function separableConv2d_(x, depthwiseFilter, pointwiseFilter, strides, pad, dil
     }
     return res;
 }
-function parseTupleParam(param) {
-    return typeof param === 'number' ? [param, param] : param;
-}
-function tupleValuesAreOne(param) {
-    var _a = parseTupleParam(param), dimA = _a[0], dimB = _a[1];
-    return dimA === 1 && dimB === 1;
-}
-function eitherStridesOrDilationsAreOne(strides, dilations) {
-    return tupleValuesAreOne(strides) || tupleValuesAreOne(dilations);
-}
 function depthwiseConv2dDerInput(xShape, dy, filter, convInfo) {
     var dy4D = dy;
     var reshapedTo4D = false;
@@ -11521,15 +13218,16 @@ function depthwiseConv2dDerFilter(x, dy, filterShape, convInfo) {
 }
 exports.conv1d = operation_1.op({ conv1d_: conv1d_ });
 exports.conv2d = operation_1.op({ conv2d_: conv2d_ });
+exports.conv2dDerFilter = operation_1.op({ conv2dDerFilter_: conv2dDerFilter_ });
 exports.depthwiseConv2d = operation_1.op({ depthwiseConv2d_: depthwiseConv2d_ });
 exports.separableConv2d = operation_1.op({ separableConv2d_: separableConv2d_ });
 exports.conv2dTranspose = operation_1.op({ conv2dTranspose_: conv2dTranspose_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./conv_util":85,"./operation":96}],85:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./conv_util":101,"./matmul":111,"./operation":114}],101:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
-function computePool2DInfo(inShape, filterSize, strides, pad, roundingMode, dataFormat) {
+function computePool2DInfo(inShape, filterSize, strides, dilations, pad, roundingMode, dataFormat) {
     if (dataFormat === void 0) { dataFormat = 'channelsLast'; }
     var _a = parseTupleParam(filterSize), filterHeight = _a[0], filterWidth = _a[1];
     var filterShape;
@@ -11542,7 +13240,6 @@ function computePool2DInfo(inShape, filterSize, strides, pad, roundingMode, data
     else {
         throw new Error("Unknown dataFormat " + dataFormat);
     }
-    var dilations = 1;
     return computeConv2DInfo(inShape, filterShape, strides, dilations, pad, roundingMode, false, dataFormat);
 }
 exports.computePool2DInfo = computePool2DInfo;
@@ -11587,6 +13284,8 @@ function computeConv2DInfo(inShape, filterShape, strides, dilations, pad, roundi
         strideWidth: strideWidth,
         filterHeight: filterHeight,
         filterWidth: filterWidth,
+        effectiveFilterHeight: effectiveFilterHeight,
+        effectiveFilterWidth: effectiveFilterWidth,
         dilationHeight: dilationHeight,
         dilationWidth: dilationWidth,
         inShape: inShape,
@@ -11671,8 +13370,17 @@ function conditionalRound(value, roundingMode) {
             throw new Error("Unknown roundingMode " + roundingMode);
     }
 }
+function tupleValuesAreOne(param) {
+    var _a = parseTupleParam(param), dimA = _a[0], dimB = _a[1];
+    return dimA === 1 && dimB === 1;
+}
+exports.tupleValuesAreOne = tupleValuesAreOne;
+function eitherStridesOrDilationsAreOne(strides, dilations) {
+    return tupleValuesAreOne(strides) || tupleValuesAreOne(dilations);
+}
+exports.eitherStridesOrDilationsAreOne = eitherStridesOrDilationsAreOne;
 
-},{"../util":134}],86:[function(require,module,exports){
+},{"../util":157}],102:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ERF_P = 0.3275911;
@@ -11682,7 +13390,64 @@ exports.ERF_A3 = 1.421413741;
 exports.ERF_A4 = -1.453152027;
 exports.ERF_A5 = 1.061405429;
 
-},{}],87:[function(require,module,exports){
+},{}],103:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var environment_1 = require("../environment");
+var tensor_util_env_1 = require("../tensor_util_env");
+var operation_1 = require("./operation");
+function gatherND_(x, indices) {
+    var $indices = tensor_util_env_1.convertToTensor(indices, 'indices', 'gatherND', 'int32');
+    var $x = tensor_util_env_1.convertToTensor(x, 'x', 'gatherND');
+    return environment_1.ENV.engine.runKernel(function (backend) { return backend.gatherND($x, $indices); }, { $x: $x, $indices: $indices });
+}
+exports.gatherND = operation_1.op({ gatherND_: gatherND_ });
+
+},{"../environment":5,"../tensor_util_env":153,"./operation":114}],104:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var util_1 = require("../util");
+function prepareAndValidate(tensor, indices) {
+    if (tensor.rank < 1) {
+        throw new Error('tf.gatherND() expects the input to be rank 1 or higher,' +
+            (" but the rank was " + tensor.rank + "."));
+    }
+    if (indices.rank < 1) {
+        throw new Error('tf.gatherND() expects the indices to be rank 1 or higher,' +
+            (" but the rank was " + indices.rank + "."));
+    }
+    if (indices.dtype !== 'int32') {
+        throw new Error('tf.gatherND() expects the indices to be int32 type,' +
+            (" but the dtype was " + indices.dtype + "."));
+    }
+    if (indices.shape[indices.rank - 1] > tensor.rank) {
+        throw new Error('index innermost dimension length must be <= tensor rank; saw: ' +
+            (indices.shape[indices.rank - 1] + " vs. " + tensor.rank));
+    }
+    if (tensor.size === 0) {
+        throw new Error('Requested more than 0 entries, but input is empty.' +
+            (" Input shape: " + tensor.shape + "."));
+    }
+    var indicesShape = indices.shape;
+    var sliceRank = indicesShape[indicesShape.length - 1];
+    var nResult = 1;
+    for (var i = 0; i < indicesShape.length - 1; ++i) {
+        nResult *= indicesShape[i];
+    }
+    var inputShape = tensor.shape;
+    var resultShape = indicesShape.slice();
+    resultShape.pop();
+    var sliceSize = 1;
+    for (var i = sliceRank; i < tensor.rank; ++i) {
+        sliceSize *= inputShape[i];
+        resultShape.push(inputShape[i]);
+    }
+    var strides = util_1.computeStrides(tensor.shape).map(function (stride) { return stride / sliceSize; }).concat([1]).slice(0, sliceRank);
+    return [resultShape, nResult, sliceSize, strides];
+}
+exports.prepareAndValidate = prepareAndValidate;
+
+},{"../util":157}],105:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -11877,7 +13642,7 @@ exports.nonMaxSuppression = operation_1.op({ nonMaxSuppression_: nonMaxSuppressi
 exports.nonMaxSuppressionAsync = nonMaxSuppressionAsync_;
 exports.cropAndResize = cropAndResize_;
 
-},{"../environment":4,"../kernels/non_max_suppression_impl":24,"../tensor_util_env":130,"../util":134,"./operation":96}],88:[function(require,module,exports){
+},{"../environment":5,"../kernels/non_max_suppression_impl":26,"../tensor_util_env":153,"../util":157,"./operation":114}],106:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -12023,7 +13788,7 @@ function qr2d(x, fullMatrices) {
 exports.gramSchmidt = operation_1.op({ gramSchmidt_: gramSchmidt_ });
 exports.qr = operation_1.op({ qr_: qr_ });
 
-},{"../environment":4,"../globals":6,"../util":134,"./array_ops":74,"./concat_split":82,"./norm":95,"./operation":96,"./reduction_ops":101,"./tensor_ops":111}],89:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../util":157,"./array_ops":89,"./concat_split":97,"./norm":113,"./operation":114,"./reduction_ops":119,"./tensor_ops":134}],107:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -12140,7 +13905,7 @@ exports.logicalXor = operation_1.op({ logicalXor_: logicalXor_ });
 exports.where = operation_1.op({ where_: where_ });
 exports.whereAsync = whereAsync_;
 
-},{"../environment":4,"../kernels/where_impl":72,"../tensor_util_env":130,"../util":134,"./broadcast_util":79,"./operation":96,"./tensor_ops":111}],90:[function(require,module,exports){
+},{"../environment":5,"../kernels/where_impl":86,"../tensor_util_env":153,"../util":157,"./broadcast_util":94,"./operation":114,"./tensor_ops":134}],108:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var globals_1 = require("../globals");
@@ -12365,7 +14130,7 @@ exports.meanSquaredError = operation_1.op({ meanSquaredError_: meanSquaredError_
 exports.sigmoidCrossEntropy = operation_1.op({ sigmoidCrossEntropy_: sigmoidCrossEntropy_ });
 exports.softmaxCrossEntropy = operation_1.op({ softmaxCrossEntropy_: softmaxCrossEntropy_ });
 
-},{"../globals":6,"../tensor_util_env":130,"../util":134,"./axis_util":76,"./binary_ops":78,"./operation":96,"./tensor_ops":111}],91:[function(require,module,exports){
+},{"../globals":7,"../tensor_util_env":153,"../util":157,"./axis_util":91,"./binary_ops":93,"./operation":114,"./tensor_ops":134}],109:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -12402,7 +14167,7 @@ function localResponseNormalization_(x, depthRadius, bias, alpha, beta) {
 }
 exports.localResponseNormalization = operation_1.op({ localResponseNormalization_: localResponseNormalization_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./operation":96}],92:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./operation":114}],110:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_util_env_1 = require("../tensor_util_env");
@@ -12451,7 +14216,7 @@ function basicLSTMCell_(forgetBias, lstmKernel, lstmBias, data, c, h) {
 exports.basicLSTMCell = operation_1.op({ basicLSTMCell_: basicLSTMCell_ });
 exports.multiRNNCell = operation_1.op({ multiRNNCell_: multiRNNCell_ });
 
-},{"../tensor_util_env":130,"./operation":96}],93:[function(require,module,exports){
+},{"../tensor_util_env":153,"./operation":114}],111:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -12547,7 +14312,7 @@ exports.matMul = operation_1.op({ matMul_: matMul_ });
 exports.dot = operation_1.op({ dot_: dot_ });
 exports.outerProduct = operation_1.op({ outerProduct_: outerProduct_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./operation":96}],94:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./operation":114}],112:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_util_1 = require("../tensor_util");
@@ -12575,7 +14340,7 @@ function movingAverage_(v, x, decay, step, zeroDebias) {
 }
 exports.movingAverage = operation_1.op({ movingAverage_: movingAverage_ });
 
-},{"../tensor_util":129,"../tensor_util_env":130,"../util":134,"./binary_ops":78,"./operation":96,"./tensor_ops":111}],95:[function(require,module,exports){
+},{"../tensor_util":152,"../tensor_util_env":153,"../util":157,"./binary_ops":93,"./operation":114,"./tensor_ops":134}],113:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_util_env_1 = require("../tensor_util_env");
@@ -12638,7 +14403,7 @@ function normImpl(x, p, axis) {
 }
 exports.norm = operation_1.op({ norm_: norm_ });
 
-},{"../tensor_util_env":130,"./axis_util":76,"./operation":96,"./tensor_ops":111}],96:[function(require,module,exports){
+},{"../tensor_util_env":153,"./axis_util":91,"./operation":114,"./tensor_ops":134}],114:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -12678,7 +14443,7 @@ function op(f) {
 }
 exports.op = op;
 
-},{"../environment":4}],97:[function(require,module,exports){
+},{"../environment":5}],115:[function(require,module,exports){
 "use strict";
 function __export(m) {
     for (var p in m) if (!exports.hasOwnProperty(p)) exports[p] = m[p];
@@ -12709,6 +14474,10 @@ __export(require("./lstm"));
 __export(require("./moving_average"));
 __export(require("./strided_slice"));
 __export(require("./topk"));
+__export(require("./scatter_nd"));
+__export(require("./spectral_ops"));
+__export(require("./sparse_to_dense"));
+__export(require("./gather_nd"));
 var operation_1 = require("./operation");
 exports.op = operation_1.op;
 var losses = require("./loss_ops");
@@ -12717,16 +14486,19 @@ var linalg = require("./linalg_ops");
 exports.linalg = linalg;
 var image = require("./image_ops");
 exports.image = image;
+var spectral = require("./spectral_ops");
+exports.spectral = spectral;
 
-},{"./array_ops":74,"./batchnorm":77,"./binary_ops":78,"./compare":80,"./complex_ops":81,"./concat_split":82,"./conv":84,"./image_ops":87,"./linalg_ops":88,"./logical_ops":89,"./loss_ops":90,"./lrn":91,"./lstm":92,"./matmul":93,"./moving_average":94,"./norm":95,"./operation":96,"./pool":98,"./reduction_ops":101,"./relu_ops":102,"./reverse":103,"./segment_ops":104,"./slice":107,"./softmax":109,"./strided_slice":110,"./tensor_ops":111,"./topk":112,"./transpose":113,"./unary_ops":114}],98:[function(require,module,exports){
+},{"./array_ops":89,"./batchnorm":92,"./binary_ops":93,"./compare":95,"./complex_ops":96,"./concat_split":97,"./conv":100,"./gather_nd":103,"./image_ops":105,"./linalg_ops":106,"./logical_ops":107,"./loss_ops":108,"./lrn":109,"./lstm":110,"./matmul":111,"./moving_average":112,"./norm":113,"./operation":114,"./pool":116,"./reduction_ops":119,"./relu_ops":120,"./reverse":121,"./scatter_nd":122,"./segment_ops":124,"./slice":127,"./softmax":129,"./sparse_to_dense":130,"./spectral_ops":132,"./strided_slice":133,"./tensor_ops":134,"./topk":135,"./transpose":136,"./unary_ops":137}],116:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
 var tensor_util_env_1 = require("../tensor_util_env");
 var util = require("../util");
+var array_ops_1 = require("./array_ops");
 var conv_util = require("./conv_util");
 var operation_1 = require("./operation");
-function maxPool_(x, filterSize, strides, pad, dimRoundingMode) {
+function maxPoolImpl_(x, filterSize, strides, dilations, pad, dimRoundingMode) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'maxPool');
     var x4D = $x;
     var reshapedTo4D = false;
@@ -12734,18 +14506,21 @@ function maxPool_(x, filterSize, strides, pad, dimRoundingMode) {
         reshapedTo4D = true;
         x4D = $x.as4D(1, $x.shape[0], $x.shape[1], $x.shape[2]);
     }
+    if (dilations == null) {
+        dilations = [1, 1];
+    }
     util.assert(x4D.rank === 4, "Error in maxPool: input must be rank 4 but got rank " + x4D.rank + ".");
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in maxPool: Either strides or dilations must be 1. ' +
+        ("Got strides " + strides + " and dilations '" + dilations + "'"));
     if (dimRoundingMode != null) {
         util.assert(util.isInt(pad), "Error in maxPool: pad must be an integer when using, " +
             ("dimRoundingMode " + dimRoundingMode + " but got pad " + pad + "."));
     }
-    var convInfo = conv_util.computePool2DInfo(x4D.shape, filterSize, strides, pad, dimRoundingMode);
+    var convInfo = conv_util.computePool2DInfo(x4D.shape, filterSize, strides, dilations, pad, dimRoundingMode);
     var grad = function (dy, saved) {
         var y4D = saved[0];
         return {
-            x: function () {
-                return maxPoolBackprop(dy, x4D, y4D, filterSize, strides, pad);
-            }
+            x: function () { return maxPoolBackprop(dy, x4D, y4D, filterSize, strides, dilations, pad); }
         };
     };
     var res = environment_1.ENV.engine.runKernel(function (backend, save) { return save(backend.maxPool(x4D, convInfo)); }, { x: x4D }, grad);
@@ -12754,9 +14529,17 @@ function maxPool_(x, filterSize, strides, pad, dimRoundingMode) {
     }
     return res;
 }
-function avgPool_(x, filterSize, strides, pad, dimRoundingMode) {
+function maxPool_(x, filterSize, strides, pad, dimRoundingMode) {
+    return maxPoolImpl_(x, filterSize, strides, 1, pad, dimRoundingMode);
+}
+function avgPoolImpl_(x, filterSize, strides, dilations, pad, dimRoundingMode) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'avgPool');
     util.assert($x.dtype === 'float32', 'The input dtype to avgPool must be float32');
+    if (dilations == null) {
+        dilations = [1, 1];
+    }
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in avgPool: Either strides or dilations must be 1. ' +
+        ("Got strides " + strides + " and dilations '" + dilations + "'"));
     var x4D = $x;
     var reshapedTo4D = false;
     if ($x.rank === 3) {
@@ -12768,9 +14551,11 @@ function avgPool_(x, filterSize, strides, pad, dimRoundingMode) {
         util.assert(util.isInt(pad), "Error in avgPool: pad must be an integer when using, " +
             ("dimRoundingMode " + dimRoundingMode + " but got pad " + pad + "."));
     }
-    var convInfo = conv_util.computePool2DInfo(x4D.shape, filterSize, strides, pad);
+    var convInfo = conv_util.computePool2DInfo(x4D.shape, filterSize, strides, dilations, pad);
     var grad = function (dy) {
-        return { x: function () { return avgPoolBackprop(dy, x4D, filterSize, strides, pad); } };
+        return {
+            x: function () { return avgPoolBackprop(dy, x4D, filterSize, strides, dilations, pad); }
+        };
     };
     var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.avgPool(x4D, convInfo); }, { x: x4D }, grad);
     res = res.cast($x.dtype);
@@ -12779,11 +14564,61 @@ function avgPool_(x, filterSize, strides, pad, dimRoundingMode) {
     }
     return res;
 }
-function maxPoolBackprop(dy, input, output, filterSize, strides, pad, dimRoundingMode) {
+function avgPool_(x, filterSize, strides, pad, dimRoundingMode) {
+    return avgPoolImpl_(x, filterSize, strides, 1, pad, dimRoundingMode);
+}
+function pool_(input, windowShape, poolingType, pad, dilations, strides) {
+    if (dilations == null) {
+        dilations = [1, 1];
+    }
+    if (strides == null) {
+        strides = 1;
+    }
+    if (pad === 0) {
+        pad = 'valid';
+    }
+    var $x = tensor_util_env_1.convertToTensor(input, 'x', 'maxPool');
+    var x4D = $x;
+    var reshapedTo4D = false;
+    if ($x.rank === 3) {
+        reshapedTo4D = true;
+        x4D = $x.as4D(1, $x.shape[0], $x.shape[1], $x.shape[2]);
+    }
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in pool: Either strides or dilations must be 1. ' +
+        ("Got strides " + strides + " and dilations '" + dilations + "'"));
+    var convInfo = conv_util.computePool2DInfo(x4D.shape, windowShape, strides, dilations, pad);
+    var dilation = [convInfo.dilationHeight, convInfo.dilationWidth];
+    var basePadding;
+    if (pad === 'same') {
+        basePadding = withSpaceToBatchBasePaddings([convInfo.filterHeight, convInfo.filterWidth], dilation);
+    }
+    else {
+        basePadding = [[0, 0], [0, 0]];
+    }
+    var isDilationOne = dilation[0] === 1 && dilation[1] === 1;
+    var _a = requiredSpaceToBatchPaddings([convInfo.inHeight, convInfo.inWidth], dilation, basePadding), adjustedPadding = _a[0], adjustedCrops = _a[1];
+    var convertedPad = isDilationOne ? pad : 'valid';
+    var convertedX = isDilationOne ? x4D : array_ops_1.spaceToBatchND(x4D, dilation, adjustedPadding);
+    var forwardOp = poolingType === 'avg' ?
+        function () { return avgPoolImpl_(convertedX, windowShape, strides, 1, convertedPad); } :
+        function () { return maxPoolImpl_(convertedX, windowShape, strides, 1, convertedPad); };
+    var y = forwardOp();
+    var res = isDilationOne ? y : array_ops_1.batchToSpaceND(y, dilation, adjustedCrops);
+    if (reshapedTo4D) {
+        return res.as3D(res.shape[1], res.shape[2], res.shape[3]);
+    }
+    return res;
+}
+function maxPoolBackprop(dy, input, output, filterSize, strides, dilations, pad, dimRoundingMode) {
     var $dy = tensor_util_env_1.convertToTensor(dy, 'dy', 'maxPoolBackprop');
     var $input = tensor_util_env_1.convertToTensor(input, 'input', 'maxPoolBackprop');
     var $output = tensor_util_env_1.convertToTensor(output, 'output', 'maxPoolBackprop');
     util.assert($input.rank === $dy.rank, "Rank of input (" + $input.rank + ") does not match rank of dy (" + $dy.rank + ")");
+    if (dilations == null) {
+        dilations = [1, 1];
+    }
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in maxPoolBackProp: Either strides or dilations must be 1. ' +
+        ("Got strides " + strides + " and dilations '" + dilations + "'"));
     util.assert($dy.rank === 4, "Error in maxPoolBackprop: dy must be rank 4 but got rank " +
         ($dy.rank + "."));
     util.assert($input.rank === 4, "Error in maxPoolBackprop: input must be rank 4 but got rank " +
@@ -12792,14 +14627,19 @@ function maxPoolBackprop(dy, input, output, filterSize, strides, pad, dimRoundin
         util.assert(util.isInt(pad), "Error in maxPoolBackprop: pad must be an integer when using, " +
             ("dimRoundingMode " + dimRoundingMode + " but got pad " + pad + "."));
     }
-    var convInfo = conv_util.computePool2DInfo($input.shape, filterSize, strides, pad, dimRoundingMode);
+    var convInfo = conv_util.computePool2DInfo($input.shape, filterSize, strides, dilations, pad, dimRoundingMode);
     var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.maxPoolBackprop($dy, $input, $output, convInfo); }, { $dy: $dy, $input: $input });
     return res;
 }
-function avgPoolBackprop(dy, input, filterSize, strides, pad) {
+function avgPoolBackprop(dy, input, filterSize, strides, dilations, pad) {
     var $dy = tensor_util_env_1.convertToTensor(dy, 'dy', 'avgPoolBackprop');
     var $input = tensor_util_env_1.convertToTensor(input, 'input', 'avgPoolBackprop');
     util.assert($input.rank === $dy.rank, "Rank of input (" + $input.rank + ") does not match rank of dy (" + $dy.rank + ")");
+    if (dilations == null) {
+        dilations = [1, 1];
+    }
+    util.assert(conv_util.eitherStridesOrDilationsAreOne(strides, dilations), 'Error in avgPoolBackprop: Either strides or dilations must be 1. ' +
+        ("Got strides " + strides + " and dilations '" + dilations + "'"));
     var input4D = $input;
     var dy4D = $dy;
     var reshapedTo4D = false;
@@ -12812,17 +14652,39 @@ function avgPoolBackprop(dy, input, filterSize, strides, pad) {
         (dy4D.rank + "."));
     util.assert(input4D.rank === 4, "Error in avgPoolBackprop: input must be rank 4 but got rank " +
         (input4D.rank + "."));
-    var convInfo = conv_util.computePool2DInfo(input4D.shape, filterSize, strides, pad);
+    var convInfo = conv_util.computePool2DInfo(input4D.shape, filterSize, strides, dilations, pad);
     var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.avgPoolBackprop(dy4D, input4D, convInfo); }, { dy4D: dy4D, input4D: input4D });
     if (reshapedTo4D) {
         return res.as3D(res.shape[1], res.shape[2], res.shape[3]);
     }
     return res;
 }
+function requiredSpaceToBatchPaddings(inputShape, blockShape, basePadding) {
+    var padStart = basePadding.map(function (b) { return b[0]; });
+    var origPadEnd = basePadding.map(function (b) { return b[1]; });
+    var fullInputShape = inputShape.concat(padStart, origPadEnd);
+    var padEndExtra = blockShape.map(function (b, i) { return (b - fullInputShape[i] % b) % b; });
+    var padEnd = origPadEnd.map(function (s, i) { return s + padEndExtra[i]; });
+    var paddings = blockShape.map(function (_, i) { return [padStart[i], padEnd[i]]; });
+    var crops = blockShape.map(function (_, i) { return [0, padEndExtra[i]]; });
+    return [paddings, crops];
+}
+function withSpaceToBatchBasePaddings(filterShape, dilation) {
+    var dilatedFilterShape = filterShape.map(function (s, i) {
+        return s + (s - 1) * (dilation[i] - 1);
+    });
+    var padExtraShape = dilatedFilterShape.map(function (s) { return s - 1; });
+    var padExtraStart = padExtraShape.map(function (s) { return Math.floor(s / 2); });
+    var padExtraEnd = padExtraShape.map(function (s, i) { return s - padExtraStart[i]; });
+    return padExtraShape.map(function (_, i) {
+        return [padExtraStart[i], padExtraEnd[i]];
+    });
+}
 exports.maxPool = operation_1.op({ maxPool_: maxPool_ });
 exports.avgPool = operation_1.op({ avgPool_: avgPool_ });
+exports.pool = operation_1.op({ pool_: pool_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./conv_util":85,"./operation":96}],99:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./array_ops":89,"./conv_util":101,"./operation":114}],117:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var seedrandom = require("seedrandom");
@@ -12880,7 +14742,7 @@ var MPRandGauss = (function () {
 }());
 exports.MPRandGauss = MPRandGauss;
 
-},{"seedrandom":142}],100:[function(require,module,exports){
+},{"seedrandom":165}],118:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util_1 = require("../util");
@@ -12893,7 +14755,7 @@ function computeOptimalWindowSize(inSize) {
 }
 exports.computeOptimalWindowSize = computeOptimalWindowSize;
 
-},{"../util":134}],101:[function(require,module,exports){
+},{"../util":157}],119:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -12954,6 +14816,28 @@ function sum_(x, axis, keepDims) {
     });
     return customOp($x);
 }
+function prod_(x, axis, keepDims) {
+    if (axis === void 0) { axis = null; }
+    if (keepDims === void 0) { keepDims = false; }
+    var $x = tensor_util_env_1.convertToTensor(x, 'x', 'prod');
+    if ($x.dtype === 'bool') {
+        $x = $x.toInt();
+    }
+    var axes = axis_util.parseAxisParam(axis, $x.shape);
+    var permutation = axis_util.getAxesPermutation(axes, $x.rank);
+    var reductionAxes = axes;
+    var permutedX = $x;
+    if (permutation != null) {
+        permutedX = $x.transpose(permutation);
+        reductionAxes = axis_util.getInnerMostAxes(reductionAxes.length, $x.rank);
+    }
+    var value = environment_1.ENV.engine.runKernel(function (backend) { return backend.prod(permutedX, reductionAxes); }, { permutedX: permutedX });
+    if (keepDims) {
+        var newShape = axis_util.expandShapeToKeepDim(value.shape, axes);
+        value = value.reshape(newShape);
+    }
+    return value;
+}
 function mean_(x, axis, keepDims) {
     if (axis === void 0) { axis = null; }
     if (keepDims === void 0) { keepDims = false; }
@@ -12980,10 +14864,26 @@ function mean_(x, axis, keepDims) {
     });
     return customOp($x);
 }
+function gradForMinAndMax(dy, saved, xOrig, origAxes, permutedAxes) {
+    var y = saved[0];
+    if (y.rank < xOrig.rank) {
+        y = y.reshape(axis_util.expandShapeToKeepDim(y.shape, origAxes));
+    }
+    if (dy.rank < xOrig.rank) {
+        dy = dy.reshape(axis_util.expandShapeToKeepDim(dy.shape, origAxes));
+    }
+    return {
+        $x: function () {
+            var dx = dy.mul(xOrig.equal(y).cast(dy.dtype));
+            return permutedAxes == null ? dx : dx.transpose(permutedAxes);
+        }
+    };
+}
 function min_(x, axis, keepDims) {
     if (axis === void 0) { axis = null; }
     if (keepDims === void 0) { keepDims = false; }
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'min');
+    var xOrig = $x;
     var origAxes = axis_util.parseAxisParam(axis, $x.shape);
     var axes = origAxes;
     var permutedAxes = axis_util.getAxesPermutation(axes, $x.rank);
@@ -12991,10 +14891,13 @@ function min_(x, axis, keepDims) {
         $x = $x.transpose(permutedAxes);
         axes = axis_util.getInnerMostAxes(axes.length, $x.rank);
     }
-    var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.min($x, axes); }, { $x: $x });
+    var grad = function (dy, saved) {
+        return gradForMinAndMax(dy, saved, xOrig, origAxes, permutedAxes);
+    };
+    var res = environment_1.ENV.engine.runKernel(function (backend, save) { return save(backend.min($x, axes)); }, { $x: $x }, grad);
     if (keepDims) {
         var newShape = axis_util.expandShapeToKeepDim(res.shape, origAxes);
-        return res.reshape(newShape);
+        res = res.reshape(newShape);
     }
     return res;
 }
@@ -13002,6 +14905,7 @@ function max_(x, axis, keepDims) {
     if (axis === void 0) { axis = null; }
     if (keepDims === void 0) { keepDims = false; }
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'max');
+    var xOrig = $x;
     var origAxes = axis_util.parseAxisParam(axis, $x.shape);
     var axes = origAxes;
     var permutedAxes = axis_util.getAxesPermutation(axes, $x.rank);
@@ -13009,10 +14913,13 @@ function max_(x, axis, keepDims) {
         $x = $x.transpose(permutedAxes);
         axes = axis_util.getInnerMostAxes(axes.length, $x.rank);
     }
-    var res = environment_1.ENV.engine.runKernel(function (backend) { return backend.max($x, axes); }, { $x: $x });
+    var grad = function (dy, saved) {
+        return gradForMinAndMax(dy, saved, xOrig, origAxes, permutedAxes);
+    };
+    var res = environment_1.ENV.engine.runKernel(function (backend, save) { return save(backend.max($x, axes)); }, { $x: $x }, grad);
     if (keepDims) {
         var newShape = axis_util.expandShapeToKeepDim(res.shape, origAxes);
-        return res.reshape(newShape);
+        res = res.reshape(newShape);
     }
     return res;
 }
@@ -13112,8 +15019,9 @@ exports.mean = operation_1.op({ mean_: mean_ });
 exports.min = operation_1.op({ min_: min_ });
 exports.moments = operation_1.op({ moments_: moments_ });
 exports.sum = operation_1.op({ sum_: sum_ });
+exports.prod = operation_1.op({ prod_: prod_ });
 
-},{"../environment":4,"../globals":6,"../tensor_util_env":130,"../util":134,"./axis_util":76,"./operation":96,"./tensor_ops":111}],102:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../tensor_util_env":153,"../util":157,"./axis_util":91,"./operation":114,"./tensor_ops":134}],120:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13179,7 +15087,7 @@ exports.prelu = operation_1.op({ prelu_: prelu_ });
 exports.relu = operation_1.op({ relu_: relu_ });
 exports.selu = operation_1.op({ selu_: selu_ });
 
-},{"../environment":4,"../tensor_util_env":130,"./binary_ops":78,"./logical_ops":89,"./operation":96,"./selu_util":106,"./tensor_ops":111}],103:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"./binary_ops":93,"./logical_ops":107,"./operation":114,"./selu_util":126,"./tensor_ops":134}],121:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13225,7 +15133,99 @@ exports.reverse2d = operation_1.op({ reverse2d_: reverse2d_ });
 exports.reverse3d = operation_1.op({ reverse3d_: reverse3d_ });
 exports.reverse4d = operation_1.op({ reverse4d_: reverse4d_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./axis_util":76,"./operation":96}],104:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./axis_util":91,"./operation":114}],122:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var environment_1 = require("../environment");
+var tensor_util_env_1 = require("../tensor_util_env");
+var operation_1 = require("./operation");
+var scatter_nd_util = require("./scatter_nd_util");
+function scatterND_(indices, updates, shape) {
+    var $indices = tensor_util_env_1.convertToTensor(indices, 'indices', 'scatterND', 'int32');
+    var $updates = tensor_util_env_1.convertToTensor(updates, 'updates', 'scatterND');
+    scatter_nd_util.validateInput($updates, $indices, shape);
+    return environment_1.ENV.engine.runKernel(function (backend) { return backend.scatterND($indices, $updates, shape); }, { $indices: $indices, $updates: $updates });
+}
+exports.scatterND = operation_1.op({ scatterND_: scatterND_ });
+
+},{"../environment":5,"../tensor_util_env":153,"./operation":114,"./scatter_nd_util":123}],123:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var util_1 = require("../util");
+function validateUpdateShape(shape, indices, updates) {
+    var sliceDim = (indices.rank > 1) ? indices.shape[indices.rank - 1] : 1;
+    var batchDim = (indices.rank > 1) ? indices.rank - 1 : 1;
+    var shapeError = 'Must have updates.shape = indices.shape[:batchDim] + ' +
+        ("shape[sliceDim:], got updates.shape: " + updates.shape) +
+        (", indices.shape: " + indices.shape + ", shape: " + shape) +
+        (", sliceDim: " + sliceDim + ", and batchDim: " + batchDim + ".");
+    if (updates.rank < batchDim) {
+        throw new Error(shapeError + (" update.rank < " + batchDim + ". "));
+    }
+    if (shape.length < sliceDim + (updates.rank - batchDim)) {
+        throw new Error(shapeError +
+            (" Output shape length < " + (sliceDim + (updates.rank - batchDim))));
+    }
+    if (updates.rank !== batchDim + shape.length - sliceDim) {
+        throw new Error(shapeError + (" update.rank != " + (batchDim + shape.length - sliceDim)));
+    }
+    for (var d = 0; d < batchDim; ++d) {
+        if (updates.shape[d] !== indices.shape[d]) {
+            throw new Error(shapeError +
+                (" updates.shape[" + d + "] (" + updates.shape[d] + ") != indices.shape[" + d + "] (" + indices.shape[d] + ")."));
+        }
+    }
+    for (var d = 0; d < updates.rank - batchDim; ++d) {
+        if (updates.shape[d + batchDim] !== shape[d + sliceDim]) {
+            throw new Error(shapeError +
+                (" updates.shape[" + (d + batchDim) + "] (" + updates.shape[d + batchDim] + ") != shape[" + (d + batchDim) + "] (" + shape[d + batchDim] + ")"));
+        }
+    }
+}
+exports.validateUpdateShape = validateUpdateShape;
+function validateInput(updates, indices, shape) {
+    if (indices.rank < 1) {
+        throw new Error('tf.scatterND() expects the indices to be rank 1 or higher,' +
+            (" but the rank was " + indices.rank + "."));
+    }
+    if (updates.rank < 1) {
+        throw new Error('tf.scatterND() expects the updates to be rank 1 or higher,' +
+            (" but the rank was " + updates.rank + "."));
+    }
+    if (indices.dtype !== 'int32') {
+        throw new Error("The dtype of 'indices' should be int32, but got dtype: " + indices.dtype);
+    }
+    if (shape.length < 1) {
+        throw new Error("Output rank must be greater or equal to 1, but got shape: " + shape);
+    }
+    if (shape.length === 0) {
+        if (indices.size === 0) {
+            throw new Error("Indices specified for empty output. indices shape: " + indices.shape);
+        }
+        if (updates.size === 0) {
+            throw new Error("Updates specified for empty output. updates shape: " + updates.shape);
+        }
+    }
+    validateUpdateShape(shape, indices, updates);
+}
+exports.validateInput = validateInput;
+function calculateShapes(updates, indices, shape) {
+    var sliceRank = (indices.rank > 1) ? indices.shape[indices.rank - 1] : 1;
+    var totalNd = shape.length;
+    var sliceSize = 1;
+    for (var i = sliceRank; i < totalNd; ++i) {
+        sliceSize *= shape[i];
+    }
+    var safeSliceDim = (sliceRank < 1) ? 1 : sliceRank;
+    var numUpdates = indices.size / safeSliceDim;
+    var outputStrides = util_1.computeStrides(shape).concat([1]);
+    var strides = outputStrides.slice(outputStrides.length - sliceRank, outputStrides.length);
+    var outputSize = util_1.sizeFromShape(shape);
+    return { sliceRank: sliceRank, numUpdates: numUpdates, sliceSize: sliceSize, strides: strides, outputSize: outputSize };
+}
+exports.calculateShapes = calculateShapes;
+
+},{"../util":157}],124:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13317,7 +15317,7 @@ function gatherDropNegatives(x, indices) {
 exports.gather = operation_1.op({ gather_: gather_ });
 exports.unsortedSegmentSum = operation_1.op({ unsortedSegmentSum_: unsortedSegmentSum_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./array_ops":74,"./axis_util":76,"./binary_ops":78,"./compare":80,"./logical_ops":89,"./operation":96,"./tensor_ops":111}],105:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./array_ops":89,"./axis_util":91,"./binary_ops":93,"./compare":95,"./logical_ops":107,"./operation":114,"./tensor_ops":134}],125:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util_1 = require("../util");
@@ -13359,13 +15359,13 @@ function computeOutShape(aShape, axis, numSegments) {
 }
 exports.computeOutShape = computeOutShape;
 
-},{"../util":134,"./reduce_util":100}],106:[function(require,module,exports){
+},{"../util":157,"./reduce_util":118}],126:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SELU_SCALEALPHA = 1.7580993408473768599402175208123;
 exports.SELU_SCALE = 1.0507009873554804934193349852946;
 
-},{}],107:[function(require,module,exports){
+},{}],127:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13380,17 +15380,17 @@ function slice1d_(x, begin, size) {
 }
 function slice2d_(x, begin, size) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'slice2d');
-    util.assert($x.rank === 2, "slice1d expects a rank-2 tensor, but got a rank-" + $x.rank + " tensor");
+    util.assert($x.rank === 2, "slice2d expects a rank-2 tensor, but got a rank-" + $x.rank + " tensor");
     return exports.slice($x, begin, size);
 }
 function slice3d_(x, begin, size) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'slice3d');
-    util.assert($x.rank === 3, "slice1d expects a rank-3 tensor, but got a rank-" + $x.rank + " tensor");
+    util.assert($x.rank === 3, "slice3d expects a rank-3 tensor, but got a rank-" + $x.rank + " tensor");
     return exports.slice($x, begin, size);
 }
 function slice4d_(x, begin, size) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'slice4d');
-    util.assert($x.rank === 4, "slice1d expects a rank-4 tensor, but got a rank-" + $x.rank + " tensor");
+    util.assert($x.rank === 4, "slice4d expects a rank-4 tensor, but got a rank-" + $x.rank + " tensor");
     return exports.slice($x, begin, size);
 }
 function slice_(x, begin, size) {
@@ -13447,7 +15447,7 @@ exports.slice2d = operation_1.op({ slice2d_: slice2d_ });
 exports.slice3d = operation_1.op({ slice3d_: slice3d_ });
 exports.slice4d = operation_1.op({ slice4d_: slice4d_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./operation":96,"./slice_util":108}],108:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./operation":114,"./slice_util":128}],128:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("../util");
@@ -13538,7 +15538,7 @@ function stopForAxis(endMask, stopIndices, strides, inputShape, axis) {
 }
 exports.stopForAxis = stopForAxis;
 
-},{"../util":134}],109:[function(require,module,exports){
+},{"../util":157}],129:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var gradients_1 = require("../gradients");
@@ -13568,9 +15568,125 @@ function softmax_(logits, dim) {
     });
     return customOp($logits);
 }
+function logSoftmax_(logits, axis) {
+    if (axis === void 0) { axis = -1; }
+    var $logits = tensor_util_env_1.convertToTensor(logits, 'logits', 'logSoftmax');
+    if (axis === -1) {
+        axis = $logits.rank - 1;
+    }
+    if (axis !== $logits.rank - 1) {
+        throw Error('Log Softmax along a non-last dimension is not yet supported. ' +
+            ("Logits was rank " + $logits.rank + " and axis was " + axis));
+    }
+    var customOp = gradients_1.customGrad(function (logits) {
+        var keepDims = true;
+        var xMax = logits.max(axis, true);
+        var shifted = logits.sub(xMax);
+        var value = shifted.toFloat().sub(shifted.exp().sum(axis, keepDims).log());
+        var gradFunc = function (dy) {
+            var softmax = value.exp();
+            return dy.sub(dy.sum(axis, keepDims).mul(softmax));
+        };
+        return { value: value, gradFunc: gradFunc };
+    });
+    return customOp($logits);
+}
 exports.softmax = operation_1.op({ softmax_: softmax_ });
+exports.logSoftmax = operation_1.op({ logSoftmax_: logSoftmax_ });
 
-},{"../gradients":7,"../tensor_util_env":130,"./operation":96}],110:[function(require,module,exports){
+},{"../gradients":8,"../tensor_util_env":153,"./operation":114}],130:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var environment_1 = require("../environment");
+var sparse_to_dense = require("../ops/sparse_to_dense_util");
+var tensor_util_env_1 = require("../tensor_util_env");
+var operation_1 = require("./operation");
+function sparseToDense_(sparseIndices, sparseValues, outputShape, defaultValue) {
+    var $sparseIndices = tensor_util_env_1.convertToTensor(sparseIndices, 'sparseIndices', 'sparseToDense', 'int32');
+    var $sparseValues = tensor_util_env_1.convertToTensor(sparseValues, 'sparseValues', 'sparseToDense');
+    var $defaultValue = tensor_util_env_1.convertToTensor(defaultValue, 'defaultValue', 'sparseToDense', $sparseValues.dtype);
+    sparse_to_dense.validateInput($sparseIndices, $sparseValues, outputShape, $defaultValue);
+    return environment_1.ENV.engine.runKernel(function (backend) { return backend.sparseToDense($sparseIndices, $sparseValues, outputShape, $defaultValue); }, { $sparseIndices: $sparseIndices, $sparseValues: $sparseValues, $defaultValue: $defaultValue });
+}
+exports.sparseToDense = operation_1.op({ sparseToDense_: sparseToDense_ });
+
+},{"../environment":5,"../ops/sparse_to_dense_util":131,"../tensor_util_env":153,"./operation":114}],131:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+function validateInput(sparseIndices, sparseValues, outputShape, defaultValues) {
+    if (sparseIndices.dtype !== 'int32') {
+        throw new Error('tf.sparseToDense() expects the indices to be int32 type,' +
+            (" but the dtype was " + sparseIndices.dtype + "."));
+    }
+    if (sparseIndices.rank > 2) {
+        throw new Error('sparseIndices should be a scalar, vector, or matrix,' +
+            (" but got shape " + sparseIndices.shape + "."));
+    }
+    var numElems = sparseIndices.rank > 0 ? sparseIndices.shape[0] : 1;
+    var numDims = sparseIndices.rank > 1 ? sparseIndices.shape[1] : 1;
+    if (outputShape.length !== numDims) {
+        throw new Error('outputShape has incorrect number of elements:,' +
+            (" " + outputShape.length + ", should be: " + numDims + "."));
+    }
+    var numValues = sparseValues.size;
+    if (!(sparseValues.rank === 0 ||
+        sparseValues.rank === 1 && numValues === numElems)) {
+        throw new Error('sparseValues has incorrect shape ' +
+            (sparseValues.shape + ", should be [] or [" + numElems + "]"));
+    }
+    if (sparseValues.dtype !== defaultValues.dtype) {
+        throw new Error('sparseValues.dtype must match defaultValues.dtype');
+    }
+}
+exports.validateInput = validateInput;
+
+},{}],132:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var environment_1 = require("../environment");
+var complex_ops_1 = require("../ops/complex_ops");
+var operation_1 = require("../ops/operation");
+var util_1 = require("../util");
+function fft_(input) {
+    util_1.assert(input.dtype === 'complex64', "The dtype for tf.spectral.fft() must be complex64 " +
+        ("but got " + input.dtype + "."));
+    var innerDimensionSize = input.shape[input.shape.length - 1];
+    var batch = input.size / innerDimensionSize;
+    var input2D = input.as2D(batch, innerDimensionSize);
+    var ret = environment_1.ENV.engine.runKernel(function (backend) { return backend.fft(input2D); }, { input: input });
+    return ret.reshape(input.shape);
+}
+function ifft_(input) {
+    util_1.assert(input.dtype === 'complex64', "The dtype for tf.spectral.ifft() must be complex64 " +
+        ("but got " + input.dtype + "."));
+    var innerDimensionSize = input.shape[input.shape.length - 1];
+    var batch = input.size / innerDimensionSize;
+    var input2D = input.as2D(batch, innerDimensionSize);
+    var ret = environment_1.ENV.engine.runKernel(function (backend) { return backend.ifft(input2D); }, { input: input });
+    return ret.reshape(input.shape);
+}
+function rfft_(input) {
+    util_1.assert(input.dtype === 'float32', "The dtype for rfft() must be real value but\n    got " + input.dtype);
+    var innerDimensionSize = input.shape[input.shape.length - 1];
+    var batch = input.size / innerDimensionSize;
+    var zeros = input.zerosLike();
+    var complexInput = complex_ops_1.complex(input, zeros).as2D(batch, innerDimensionSize);
+    var ret = environment_1.ENV.engine.runKernel(function (backend) { return backend.fft(complexInput); }, { complexInput: complexInput });
+    var half = Math.floor(innerDimensionSize / 2) + 1;
+    var realValues = complex_ops_1.real(ret);
+    var imagValues = complex_ops_1.imag(ret);
+    var realComplexConjugate = realValues.split([half, innerDimensionSize - half], realValues.shape.length - 1);
+    var imagComplexConjugate = imagValues.split([half, innerDimensionSize - half], imagValues.shape.length - 1);
+    var outputShape = input.shape.slice();
+    outputShape[input.shape.length - 1] = half;
+    return complex_ops_1.complex(realComplexConjugate[0], imagComplexConjugate[0])
+        .reshape(outputShape);
+}
+exports.fft = operation_1.op({ fft_: fft_ });
+exports.ifft = operation_1.op({ ifft_: ifft_ });
+exports.rfft = operation_1.op({ rfft_: rfft_ });
+
+},{"../environment":5,"../ops/complex_ops":96,"../ops/operation":114,"../util":157}],133:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13593,12 +15709,13 @@ function stridedSlice_(x, begin, end, strides, beginMask, endMask, ellipsisMask,
 }
 exports.stridedSlice = operation_1.op({ stridedSlice_: stridedSlice_ });
 
-},{"../environment":4,"../tensor_util_env":130,"./operation":96}],111:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"./operation":114}],134:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
 var tensor_1 = require("../tensor");
 var tensor_util_env_1 = require("../tensor_util_env");
+var tensor_util_env_2 = require("../tensor_util_env");
 var util_1 = require("../util");
 var complex_ops_1 = require("./complex_ops");
 var operation_1 = require("./operation");
@@ -13613,7 +15730,7 @@ function tensor(values, shape, dtype) {
         throw new Error('values passed to tensor(values) must be an ' +
             'array of numbers or booleans, or a TypedArray');
     }
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (shape != null && inferredShape.length !== 1) {
         util_1.assertShapesMatch(shape, inferredShape, "Error creating a new Tensor. " +
             ("Inferred shape (" + inferredShape + ") does not match the ") +
@@ -13640,7 +15757,7 @@ exports.scalar = scalar;
 function tensor1d(values, dtype) {
     if (dtype === void 0) { dtype = 'float32'; }
     util_1.assertNonNull(values);
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (inferredShape.length !== 1) {
         throw new Error('tensor1d() requires values to be a flat/TypedArray');
     }
@@ -13653,7 +15770,7 @@ function tensor2d(values, shape, dtype) {
     if (shape != null && shape.length !== 2) {
         throw new Error('tensor2d() requires shape to have two numbers');
     }
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (inferredShape.length !== 2 && inferredShape.length !== 1) {
         throw new Error('tensor2d() requires values to be number[][] or flat/TypedArray');
     }
@@ -13671,7 +15788,7 @@ function tensor3d(values, shape, dtype) {
     if (shape != null && shape.length !== 3) {
         throw new Error('tensor3d() requires shape to have three numbers');
     }
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (inferredShape.length !== 3 && inferredShape.length !== 1) {
         throw new Error('tensor3d() requires values to be number[][][] or flat/TypedArray');
     }
@@ -13689,7 +15806,7 @@ function tensor4d(values, shape, dtype) {
     if (shape != null && shape.length !== 4) {
         throw new Error('tensor4d() requires shape to have four numbers');
     }
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (inferredShape.length !== 4 && inferredShape.length !== 1) {
         throw new Error('tensor4d() requires values to be number[][][][] or flat/TypedArray');
     }
@@ -13707,7 +15824,7 @@ function tensor5d(values, shape, dtype) {
     if (shape != null && shape.length !== 5) {
         throw new Error('tensor5d() requires shape to have five numbers');
     }
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (inferredShape.length !== 5 && inferredShape.length !== 1) {
         throw new Error('tensor5d() requires values to be ' +
             'number[][][][][] or flat/TypedArray');
@@ -13726,7 +15843,7 @@ function tensor6d(values, shape, dtype) {
     if (shape != null && shape.length !== 6) {
         throw new Error('tensor6d() requires shape to have six numbers');
     }
-    var inferredShape = util_1.inferShape(values);
+    var inferredShape = tensor_util_env_2.inferShape(values);
     if (inferredShape.length !== 6 && inferredShape.length !== 1) {
         throw new Error('tensor6d() requires values to be number[][][][] or flat/TypedArray');
     }
@@ -13817,7 +15934,7 @@ exports.range = range;
 exports.onesLike = operation_1.op({ onesLike_: onesLike_ });
 exports.zerosLike = operation_1.op({ zerosLike_: zerosLike_ });
 
-},{"../environment":4,"../tensor":127,"../tensor_util_env":130,"../util":134,"./complex_ops":81,"./operation":96}],112:[function(require,module,exports){
+},{"../environment":5,"../tensor":150,"../tensor_util_env":153,"../util":157,"./complex_ops":96,"./operation":114}],135:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13840,7 +15957,7 @@ function topk_(x, k, sorted) {
 }
 exports.topk = operation_1.op({ topk_: topk_ });
 
-},{"../environment":4,"../tensor_util_env":130,"./operation":96}],113:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"./operation":114}],136:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13870,7 +15987,7 @@ function transpose_(x, perm) {
 }
 exports.transpose = operation_1.op({ transpose_: transpose_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./axis_util":76,"./operation":96}],114:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./axis_util":91,"./operation":114}],137:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("../environment");
@@ -13972,6 +16089,9 @@ function reciprocal_(x) {
 }
 function abs_(x) {
     var $x = tensor_util_env_1.convertToTensor(x, 'x', 'abs');
+    if ($x.dtype === 'complex64') {
+        return environment_1.ENV.engine.runKernel(function (backend) { return backend.complexAbs($x); }, { $x: $x });
+    }
     var grad = function (dy) {
         return { $x: function () { return dy.mulStrict($x.toFloat().step(-1)); } };
     };
@@ -14160,7 +16280,7 @@ exports.step = operation_1.op({ step_: step_ });
 exports.tan = operation_1.op({ tan_: tan_ });
 exports.tanh = operation_1.op({ tanh_: tanh_ });
 
-},{"../environment":4,"../tensor_util_env":130,"../util":134,"./operation":96,"./tensor_ops":111}],115:[function(require,module,exports){
+},{"../environment":5,"../tensor_util_env":153,"../util":157,"./operation":114,"./tensor_ops":134}],138:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14267,7 +16387,7 @@ var AdadeltaOptimizer = (function (_super) {
 exports.AdadeltaOptimizer = AdadeltaOptimizer;
 serialization_1.registerClass(AdadeltaOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./optimizer":120}],116:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./optimizer":143}],139:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14349,7 +16469,7 @@ var AdagradOptimizer = (function (_super) {
 exports.AdagradOptimizer = AdagradOptimizer;
 serialization_1.registerClass(AdagradOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./optimizer":120}],117:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./optimizer":143}],140:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14468,7 +16588,7 @@ var AdamOptimizer = (function (_super) {
 exports.AdamOptimizer = AdamOptimizer;
 serialization_1.registerClass(AdamOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./optimizer":120}],118:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./optimizer":143}],141:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14589,7 +16709,7 @@ var AdamaxOptimizer = (function (_super) {
 exports.AdamaxOptimizer = AdamaxOptimizer;
 serialization_1.registerClass(AdamaxOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./optimizer":120}],119:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./optimizer":143}],142:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14679,7 +16799,7 @@ var MomentumOptimizer = (function (_super) {
 exports.MomentumOptimizer = MomentumOptimizer;
 serialization_1.registerClass(MomentumOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./sgd_optimizer":123}],120:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./sgd_optimizer":146}],143:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14720,7 +16840,7 @@ var Optimizer = (function (_super) {
 }(serialization_1.Serializable));
 exports.Optimizer = Optimizer;
 
-},{"../globals":6,"../serialization":125}],121:[function(require,module,exports){
+},{"../globals":7,"../serialization":148}],144:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var adadelta_optimizer_1 = require("./adadelta_optimizer");
@@ -14776,7 +16896,7 @@ var OptimizerConstructors = (function () {
 }());
 exports.OptimizerConstructors = OptimizerConstructors;
 
-},{"./adadelta_optimizer":115,"./adagrad_optimizer":116,"./adam_optimizer":117,"./adamax_optimizer":118,"./momentum_optimizer":119,"./rmsprop_optimizer":122,"./sgd_optimizer":123}],122:[function(require,module,exports){
+},{"./adadelta_optimizer":138,"./adagrad_optimizer":139,"./adam_optimizer":140,"./adamax_optimizer":141,"./momentum_optimizer":142,"./rmsprop_optimizer":145,"./sgd_optimizer":146}],145:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14920,7 +17040,7 @@ var RMSPropOptimizer = (function (_super) {
 exports.RMSPropOptimizer = RMSPropOptimizer;
 serialization_1.registerClass(RMSPropOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./optimizer":120}],123:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./optimizer":143}],146:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -14980,7 +17100,7 @@ var SGDOptimizer = (function (_super) {
 exports.SGDOptimizer = SGDOptimizer;
 serialization_1.registerClass(SGDOptimizer);
 
-},{"../environment":4,"../globals":6,"../ops/ops":97,"../serialization":125,"./optimizer":120}],124:[function(require,module,exports){
+},{"../environment":5,"../globals":7,"../ops/ops":115,"../serialization":148,"./optimizer":143}],147:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util = require("./util");
@@ -15004,7 +17124,11 @@ var Profiler = (function () {
             var vals = r.dataSync();
             util.checkComputationForNaN(vals, r.dtype, name);
             timer.then(function (timing) {
-                _this.logger.logKernelProfile(name, r, vals, timing.kernelMs);
+                var extraInfo = '';
+                if (timing.getExtraProfileInfo != null) {
+                    extraInfo = timing.getExtraProfileInfo();
+                }
+                _this.logger.logKernelProfile(name, r, vals, timing.kernelMs, extraInfo);
             });
         });
         return result;
@@ -15015,19 +17139,19 @@ exports.Profiler = Profiler;
 var Logger = (function () {
     function Logger() {
     }
-    Logger.prototype.logKernelProfile = function (name, result, vals, timeMs) {
+    Logger.prototype.logKernelProfile = function (name, result, vals, timeMs, extraInfo) {
         var time = util.rightPad(timeMs + "ms", 9);
         var paddedName = util.rightPad(name, 25);
         var rank = result.rank;
         var size = result.size;
         var shape = util.rightPad(result.shape.toString(), 14);
-        console.log("%c" + paddedName + "\t%c" + time + "\t%c" + rank + "D " + shape + "\t%c" + size, 'font-weight:bold', 'color:red', 'color:blue', 'color: orange');
+        console.log("%c" + paddedName + "\t%c" + time + "\t%c" + rank + "D " + shape + "\t%c" + size + "\t%c" + extraInfo, 'font-weight:bold', 'color:red', 'color:blue', 'color: orange', 'color: green');
     };
     return Logger;
 }());
 exports.Logger = Logger;
 
-},{"./util":134}],125:[function(require,module,exports){
+},{"./util":157}],148:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util_1 = require("./util");
@@ -15072,7 +17196,7 @@ function registerClass(cls) {
 }
 exports.registerClass = registerClass;
 
-},{"./util":134}],126:[function(require,module,exports){
+},{"./util":157}],149:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_1 = require("./tensor");
@@ -15185,7 +17309,7 @@ function backpropagateGradients(tensorAccumulatedGradientMap, filteredTape) {
 }
 exports.backpropagateGradients = backpropagateGradients;
 
-},{"./tensor":127,"./util":134}],127:[function(require,module,exports){
+},{"./tensor":150,"./util":157}],150:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = Object.setPrototypeOf ||
@@ -15346,7 +17470,7 @@ var Tensor = (function () {
         }
         this.strides = util_1.computeStrides(shape);
         this.dataId = dataId != null ? dataId : {};
-        this.id = Tensor.nextId++;
+        this.id = trackerFn().nextTensorId();
         this.rankType = (this.rank < 5 ? this.rank.toString() : 'higher');
         trackerFn().registerTensor(this);
         if (values != null) {
@@ -15571,6 +17695,12 @@ var Tensor = (function () {
         if (keepDims === void 0) { keepDims = false; }
         this.throwIfDisposed();
         return opHandler.sum(this, axis, keepDims);
+    };
+    Tensor.prototype.prod = function (axis, keepDims) {
+        if (axis === void 0) { axis = null; }
+        if (keepDims === void 0) { keepDims = false; }
+        this.throwIfDisposed();
+        return opHandler.prod(this, axis, keepDims);
     };
     Tensor.prototype.mean = function (axis, keepDims) {
         if (axis === void 0) { axis = null; }
@@ -15919,6 +18049,11 @@ var Tensor = (function () {
         this.throwIfDisposed();
         return opHandler.softmax(this, dim);
     };
+    Tensor.prototype.logSoftmax = function (axis) {
+        if (axis === void 0) { axis = -1; }
+        this.throwIfDisposed();
+        return opHandler.logSoftmax(this, axis);
+    };
     Tensor.prototype.resizeBilinear = function (newShape2D, alignCorners) {
         if (alignCorners === void 0) { alignCorners = false; }
         this.throwIfDisposed();
@@ -15972,6 +18107,10 @@ var Tensor = (function () {
         if (beta === void 0) { beta = 0.5; }
         return opHandler.localResponseNormalization(this, radius, bias, alpha, beta);
     };
+    Tensor.prototype.pool = function (windowShape, poolingType, padding, dilationRate, strides) {
+        this.throwIfDisposed();
+        return opHandler.pool(this, windowShape, poolingType, padding, dilationRate, strides);
+    };
     Tensor.prototype.variable = function (trainable, name, dtype) {
         if (trainable === void 0) { trainable = true; }
         this.throwIfDisposed();
@@ -16005,7 +18144,14 @@ var Tensor = (function () {
         this.throwIfDisposed();
         return opHandler.depthToSpace(this, blockSize, dataFormat);
     };
-    Tensor.nextId = 0;
+    Tensor.prototype.fft = function () {
+        this.throwIfDisposed();
+        return opHandler.spectral.fft(this);
+    };
+    Tensor.prototype.ifft = function () {
+        this.throwIfDisposed();
+        return opHandler.spectral.ifft(this);
+    };
     return Tensor;
 }());
 exports.Tensor = Tensor;
@@ -16022,8 +18168,7 @@ var Variable = (function (_super) {
         _this.trainable = trainable;
         _this.name = name;
         if (_this.name == null) {
-            _this.name = Variable.nextVarId.toString();
-            Variable.nextVarId++;
+            _this.name = trackerFn().nextVariableId().toString();
         }
         try {
             trackerFn().registerVariable(_this);
@@ -16054,7 +18199,6 @@ var Variable = (function (_super) {
         this.dataId = newValue.dataId;
         trackerFn().registerTensor(this);
     };
-    Variable.nextVarId = 0;
     return Variable;
 }(Tensor));
 exports.Variable = Variable;
@@ -16067,7 +18211,7 @@ Object.defineProperty(Variable, Symbol.hasInstance, {
 var variable = Variable.variable;
 exports.variable = variable;
 
-},{"./tensor_format":128,"./util":134}],128:[function(require,module,exports){
+},{"./tensor_format":151,"./util":157}],151:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var util_1 = require("./util");
@@ -16198,7 +18342,7 @@ function createComplexTuples(vals) {
     return complexTuples;
 }
 
-},{"./util":134}],129:[function(require,module,exports){
+},{"./util":157}],152:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var tensor_1 = require("./tensor");
@@ -16273,12 +18417,47 @@ function isIterable(obj) {
     return Array.isArray(obj) || typeof obj === 'object';
 }
 
-},{"./tensor":127,"./util":134}],130:[function(require,module,exports){
+},{"./tensor":150,"./util":157}],153:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
 var tensor_1 = require("./tensor");
 var util_1 = require("./util");
+function inferShape(val) {
+    var firstElem = val;
+    if (util_1.isTypedArray(val)) {
+        return [val.length];
+    }
+    if (!Array.isArray(val)) {
+        return [];
+    }
+    var shape = [];
+    while (firstElem instanceof Array) {
+        shape.push(firstElem.length);
+        firstElem = firstElem[0];
+    }
+    if (val instanceof Array && environment_1.ENV.get('TENSORLIKE_CHECK_SHAPE_CONSISTENCY')) {
+        deepAssertShapeConsistency(val, shape, []);
+    }
+    return shape;
+}
+exports.inferShape = inferShape;
+function deepAssertShapeConsistency(val, shape, indices) {
+    indices = indices || [];
+    if (!(val instanceof Array)) {
+        util_1.assert(shape.length === 0, function () { return "Element arr[" + indices.join('][') + "] is a primitive, " +
+            ("but should be an array of " + shape[0] + " elements"); });
+        return;
+    }
+    util_1.assert(shape.length > 0, function () { return "Element arr[" + indices.join('][') + "] should be a primitive, " +
+        ("but is an array of " + val.length + " elements"); });
+    util_1.assert(val.length === shape[0], function () { return "Element arr[" + indices.join('][') + "] should have " + shape[0] + " " +
+        ("elements, but has " + val.length + " elements"); });
+    var subShape = shape.slice(1);
+    for (var i = 0; i < val.length; ++i) {
+        deepAssertShapeConsistency(val[i], subShape, indices.concat(i));
+    }
+}
 function convertToTensor(x, argName, functionName, dtype) {
     if (dtype === void 0) { dtype = 'float32'; }
     dtype = dtype || 'float32';
@@ -16290,7 +18469,7 @@ function convertToTensor(x, argName, functionName, dtype) {
         throw new Error("Argument '" + argName + "' passed to '" + functionName + "' must be a " +
             ("Tensor or TensorLike, but got " + x.constructor.name));
     }
-    var inferredShape = util_1.inferShape(x);
+    var inferredShape = inferShape(x);
     if (!util_1.isTypedArray(x) && !Array.isArray(x)) {
         x = [x];
     }
@@ -16307,7 +18486,7 @@ function convertToTensorArray(arg, argName, functionName) {
 }
 exports.convertToTensorArray = convertToTensorArray;
 
-},{"./environment":4,"./tensor":127,"./util":134}],131:[function(require,module,exports){
+},{"./environment":5,"./tensor":150,"./util":157}],154:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var environment_1 = require("./environment");
@@ -16327,6 +18506,9 @@ exports.BROWSER_ENVS = {
 };
 exports.CPU_ENVS = {
     'HAS_WEBGL': false
+};
+exports.BROWSER_CPU_ENVS = {
+    'BACKEND': 'test-cpu'
 };
 exports.ALL_ENVS = {};
 function expectArraysClose(actual, expected, epsilon) {
@@ -16428,7 +18610,7 @@ function expectArrayBuffersEqual(actual, expected) {
 }
 exports.expectArrayBuffersEqual = expectArrayBuffersEqual;
 
-},{"./environment":4,"./tensor":127,"./util":134}],132:[function(require,module,exports){
+},{"./environment":5,"./tensor":150,"./util":157}],155:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var adadelta_optimizer_1 = require("./optimizers/adadelta_optimizer");
@@ -16451,7 +18633,7 @@ exports.train = {
     adam: optimizer_constructors_1.OptimizerConstructors.adam
 };
 
-},{"./optimizers/adadelta_optimizer":115,"./optimizers/adagrad_optimizer":116,"./optimizers/adam_optimizer":117,"./optimizers/adamax_optimizer":118,"./optimizers/momentum_optimizer":119,"./optimizers/optimizer_constructors":121,"./optimizers/rmsprop_optimizer":122,"./optimizers/sgd_optimizer":123}],133:[function(require,module,exports){
+},{"./optimizers/adadelta_optimizer":138,"./optimizers/adagrad_optimizer":139,"./optimizers/adam_optimizer":140,"./optimizers/adamax_optimizer":141,"./optimizers/momentum_optimizer":142,"./optimizers/optimizer_constructors":144,"./optimizers/rmsprop_optimizer":145,"./optimizers/sgd_optimizer":146}],156:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var DType;
@@ -16513,7 +18695,7 @@ function sumOutType(type) {
 }
 exports.sumOutType = sumOutType;
 
-},{}],134:[function(require,module,exports){
+},{}],157:[function(require,module,exports){
 (function (process){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -16534,6 +18716,18 @@ function clamp(min, x, max) {
     return Math.max(min, Math.min(x, max));
 }
 exports.clamp = clamp;
+function nearestLargerEven(val) {
+    return val % 2 === 0 ? val : val + 1;
+}
+exports.nearestLargerEven = nearestLargerEven;
+function sum(arr) {
+    var sum = 0;
+    for (var i = 0; i < arr.length; i++) {
+        sum += arr[i];
+    }
+    return sum;
+}
+exports.sum = sum;
 function randUniform(a, b) {
     var r = Math.random();
     return (b * r) + (1 - r) * a;
@@ -16576,41 +18770,6 @@ function flatten(arr, ret) {
     return ret;
 }
 exports.flatten = flatten;
-function inferShape(val) {
-    var firstElem = val;
-    if (isTypedArray(val)) {
-        return [val.length];
-    }
-    if (!Array.isArray(val)) {
-        return [];
-    }
-    var shape = [];
-    while (firstElem instanceof Array) {
-        shape.push(firstElem.length);
-        firstElem = firstElem[0];
-    }
-    if (val instanceof Array) {
-        deepAssertShapeConsistency(val, shape, []);
-    }
-    return shape;
-}
-exports.inferShape = inferShape;
-function deepAssertShapeConsistency(val, shape, indices) {
-    indices = indices || [];
-    if (!(val instanceof Array)) {
-        assert(shape.length === 0, function () { return "Element arr[" + indices.join('][') + "] is a primitive, " +
-            ("but should be an array of " + shape[0] + " elements"); });
-        return;
-    }
-    assert(shape.length > 0, function () { return "Element arr[" + indices.join('][') + "] should be a primitive, " +
-        ("but is an array of " + val.length + " elements"); });
-    assert(val.length === shape[0], function () { return "Element arr[" + indices.join('][') + "] should have " + shape[0] + " " +
-        ("elements, but has " + val.length + " elements"); });
-    var subShape = shape.slice(1);
-    for (var i = 0; i < val.length; ++i) {
-        deepAssertShapeConsistency(val[i], subShape, indices.concat(i));
-    }
-}
 function sizeFromShape(shape) {
     if (shape.length === 0) {
         return 1;
@@ -16627,6 +18786,12 @@ function isScalarShape(shape) {
 }
 exports.isScalarShape = isScalarShape;
 function arraysEqual(n1, n2) {
+    if (n1 === n2) {
+        return true;
+    }
+    if (n1 == null || n2 == null) {
+        return false;
+    }
     if (n1.length !== n2.length) {
         return false;
     }
@@ -16944,13 +19109,13 @@ function now() {
 exports.now = now;
 
 }).call(this,require('_process'))
-},{"_process":141}],135:[function(require,module,exports){
+},{"_process":164}],158:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-var version = '0.12.18';
+var version = '0.13.11';
 exports.version = version;
 
-},{}],136:[function(require,module,exports){
+},{}],159:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 var gpgpu_util = require("./kernels/webgl/gpgpu_util");
@@ -16962,7 +19127,7 @@ exports.MathBackendWebGL = backend_webgl_1.MathBackendWebGL;
 var gpgpu_context_1 = require("./kernels/webgl/gpgpu_context");
 exports.GPGPUContext = gpgpu_context_1.GPGPUContext;
 
-},{"./kernels/backend_webgl":22,"./kernels/webgl/gpgpu_context":44,"./kernels/webgl/gpgpu_util":46,"./kernels/webgl/webgl_util":71}],137:[function(require,module,exports){
+},{"./kernels/backend_webgl":24,"./kernels/webgl/gpgpu_context":51,"./kernels/webgl/gpgpu_util":53,"./kernels/webgl/webgl_util":85}],160:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -17115,9 +19280,9 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],138:[function(require,module,exports){
+},{}],161:[function(require,module,exports){
 
-},{}],139:[function(require,module,exports){
+},{}],162:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -18896,7 +21061,7 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-},{"base64-js":137,"ieee754":140}],140:[function(require,module,exports){
+},{"base64-js":160,"ieee754":163}],163:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = (nBytes * 8) - mLen - 1
@@ -18982,7 +21147,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],141:[function(require,module,exports){
+},{}],164:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -19168,7 +21333,7 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],142:[function(require,module,exports){
+},{}],165:[function(require,module,exports){
 // A library of seedable RNGs implemented in Javascript.
 //
 // Usage:
@@ -19230,7 +21395,7 @@ sr.tychei = tychei;
 
 module.exports = sr;
 
-},{"./lib/alea":143,"./lib/tychei":144,"./lib/xor128":145,"./lib/xor4096":146,"./lib/xorshift7":147,"./lib/xorwow":148,"./seedrandom":149}],143:[function(require,module,exports){
+},{"./lib/alea":166,"./lib/tychei":167,"./lib/xor128":168,"./lib/xor4096":169,"./lib/xorshift7":170,"./lib/xorwow":171,"./seedrandom":172}],166:[function(require,module,exports){
 // A port of an algorithm by Johannes Baagøe <baagoe@baagoe.com>, 2010
 // http://baagoe.com/en/RandomMusings/javascript/
 // https://github.com/nquinlan/better-random-numbers-for-javascript-mirror
@@ -19346,7 +21511,7 @@ if (module && module.exports) {
 
 
 
-},{}],144:[function(require,module,exports){
+},{}],167:[function(require,module,exports){
 // A Javascript implementaion of the "Tyche-i" prng algorithm by
 // Samuel Neves and Filipe Araujo.
 // See https://eden.dei.uc.pt/~sneves/pubs/2011-snfa2.pdf
@@ -19451,7 +21616,7 @@ if (module && module.exports) {
 
 
 
-},{}],145:[function(require,module,exports){
+},{}],168:[function(require,module,exports){
 // A Javascript implementaion of the "xor128" prng algorithm by
 // George Marsaglia.  See http://www.jstatsoft.org/v08/i14/paper
 
@@ -19534,7 +21699,7 @@ if (module && module.exports) {
 
 
 
-},{}],146:[function(require,module,exports){
+},{}],169:[function(require,module,exports){
 // A Javascript implementaion of Richard Brent's Xorgens xor4096 algorithm.
 //
 // This fast non-cryptographic random number generator is designed for
@@ -19682,7 +21847,7 @@ if (module && module.exports) {
   (typeof define) == 'function' && define   // present with an AMD loader
 );
 
-},{}],147:[function(require,module,exports){
+},{}],170:[function(require,module,exports){
 // A Javascript implementaion of the "xorshift7" algorithm by
 // François Panneton and Pierre L'ecuyer:
 // "On the Xorgshift Random Number Generators"
@@ -19781,7 +21946,7 @@ if (module && module.exports) {
 );
 
 
-},{}],148:[function(require,module,exports){
+},{}],171:[function(require,module,exports){
 // A Javascript implementaion of the "xorwow" prng algorithm by
 // George Marsaglia.  See http://www.jstatsoft.org/v08/i14/paper
 
@@ -19869,7 +22034,7 @@ if (module && module.exports) {
 
 
 
-},{}],149:[function(require,module,exports){
+},{}],172:[function(require,module,exports){
 /*
 Copyright 2014 David Bau.
 
@@ -19898,10 +22063,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 // The following constants are related to IEEE 754 limits.
 //
-
-// Detect the global object, even if operating in strict mode.
-// http://stackoverflow.com/a/14387057/265298
-var global = (0, eval)('this'),
+var global = this,
     width = 256,        // each RC4 output is 0 <= x < 256
     chunks = 6,         // at least six RC4 outputs for each double
     digits = 52,        // there are 52 significant digits in a double
@@ -20121,7 +22283,7 @@ if ((typeof module) == 'object' && module.exports) {
   Math    // math: package containing random, pow, and seedrandom
 );
 
-},{"crypto":138}],150:[function(require,module,exports){
+},{"crypto":161}],173:[function(require,module,exports){
 (function (setImmediate,clearImmediate){
 var nextTick = require('process/browser.js').nextTick;
 var apply = Function.prototype.apply;
@@ -20200,10 +22362,10 @@ exports.clearImmediate = typeof clearImmediate === "function" ? clearImmediate :
   delete immediateIds[id];
 };
 }).call(this,require("timers").setImmediate,require("timers").clearImmediate)
-},{"process/browser.js":141,"timers":150}],151:[function(require,module,exports){
+},{"process/browser.js":164,"timers":173}],174:[function(require,module,exports){
 !function(e,t){"object"==typeof exports&&"object"==typeof module?module.exports=t(require("tone")):"function"==typeof define&&define.amd?define(["tone"],t):"object"==typeof exports?exports.Piano=t(require("tone")):e.Piano=t(e.tone)}(this,function(e){return function(e){function t(r){if(n[r])return n[r].exports;var o=n[r]={i:r,l:!1,exports:{}};return e[r].call(o.exports,o,o.exports,t),o.l=!0,o.exports}var n={};return t.m=e,t.c=n,t.i=function(e){return e},t.d=function(e,n,r){t.o(e,n)||Object.defineProperty(e,n,{configurable:!1,enumerable:!0,get:r})},t.n=function(e){var n=e&&e.__esModule?function(){return e.default}:function(){return e};return t.d(n,"a",n),n},t.o=function(e,t){return Object.prototype.hasOwnProperty.call(e,t)},t.p="",t(t.s=8)}([function(t,n){t.exports=e},function(e,t,n){"use strict";Object.defineProperty(t,"__esModule",{value:!0});var r=n(2);t.default={getReleasesUrl:function(e){return"rel"+(e-20)+".[mp3|ogg]"},getHarmonicsUrl:function(e){return"harmL"+(0,r.midiToNote)(e).replace("#","s")+".[mp3|ogg]"},getNotesUrl:function(e,t){return(0,r.midiToNote)(e).replace("#","s")+"v"+t+".[mp3|ogg]"}}},function(e,t,n){"use strict";function r(e){return(0,s.Frequency)(e).toMidi()}function o(e){return(0,s.Frequency)(e,"midi").toNote()}function i(e){var t=e%3;return 1===t?[e-1,c.default.intervalToFrequencyRatio(1)]:2===t?[e+1,c.default.intervalToFrequencyRatio(-1)]:[e,1]}function u(e){return new s.BufferSource(e)}function a(e,t){return Math.random()*(t-e)+e}Object.defineProperty(t,"__esModule",{value:!0}),t.randomBetween=t.midiToFrequencyRatio=t.createSource=t.noteToMidi=t.midiToNote=void 0;var s=n(0),c=function(e){return e&&e.__esModule?e:{default:e}}(s);t.midiToNote=o,t.noteToMidi=r,t.createSource=u,t.midiToFrequencyRatio=i,t.randomBetween=a},function(e,t,n){"use strict";function r(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}function o(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t}function i(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)}Object.defineProperty(t,"__esModule",{value:!0});var u=function(){function e(e,t){for(var n=0;n<t.length;n++){var r=t[n];r.enumerable=r.enumerable||!1,r.configurable=!0,"value"in r&&(r.writable=!0),Object.defineProperty(e,r.key,r)}}return function(t,n,r){return n&&e(t.prototype,n),r&&e(t,r),t}}(),a=n(0),s=function(e){return e&&e.__esModule?e:{default:e}}(a),c=function(e){function t(){var e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:0;r(this,t);var n=o(this,(t.__proto__||Object.getPrototypeOf(t)).call(this));return n.createInsOuts(0,1),n.volume=e,n}return i(t,e),u(t,[{key:"volume",get:function(){return s.default.gainToDb(this.output.gain.value)},set:function(e){this.output.gain.value=s.default.dbToGain(e)}}]),t}(a.AudioNode);t.default=c},function(e,t,n){"use strict";function r(e){return e&&e.__esModule?e:{default:e}}function o(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}function i(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t}function u(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)}Object.defineProperty(t,"__esModule",{value:!0});var a=function(){function e(e,t){for(var n=0;n<t.length;n++){var r=t[n];r.enumerable=r.enumerable||!1,r.configurable=!0,"value"in r&&(r.writable=!0),Object.defineProperty(e,r.key,r)}}return function(t,n,r){return n&&e(t.prototype,n),r&&e(t,r),t}}(),s=n(1),c=r(s),l=n(3),f=r(l),p=n(2),h=n(0),d=[21,24,27,30,33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87],_=function(e){function t(){var e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:[21,108];o(this,t);var n=i(this,(t.__proto__||Object.getPrototypeOf(t)).call(this)),r=d.findIndex(function(t){return t>=e[0]}),u=d.findIndex(function(t){return t>=e[1]});u=-1===u?u=d.length:u;var a=d.slice(r,u);n._samples={};var s=!0,l=!1,f=void 0;try{for(var p,h=a[Symbol.iterator]();!(s=(p=h.next()).done);s=!0){var _=p.value;n._samples[_]=c.default.getHarmonicsUrl(_)}}catch(e){l=!0,f=e}finally{try{!s&&h.return&&h.return()}finally{if(l)throw f}}return n}return u(t,e),a(t,[{key:"start",value:function(e,t,n){e>=d[0]&&e<=d[d.length-1]&&this._sampler.triggerAttack((0,p.midiToNote)(e),t,n*(0,p.randomBetween)(.5,1))}},{key:"load",value:function(e){var t=this;return new Promise(function(n,r){t._sampler=new h.Sampler(t._samples,n,e).connect(t.output),t._sampler.release=1})}}]),t}(f.default);t.default=_},function(e,t,n){"use strict";function r(e){return e&&e.__esModule?e:{default:e}}function o(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}function i(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t}function u(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)}Object.defineProperty(t,"__esModule",{value:!0}),t.Notes=void 0;var a=function(){function e(e,t){var n=[],r=!0,o=!1,i=void 0;try{for(var u,a=e[Symbol.iterator]();!(r=(u=a.next()).done)&&(n.push(u.value),!t||n.length!==t);r=!0);}catch(e){o=!0,i=e}finally{try{!r&&a.return&&a.return()}finally{if(o)throw i}}return n}return function(t,n){if(Array.isArray(t))return t;if(Symbol.iterator in Object(t))return e(t,n);throw new TypeError("Invalid attempt to destructure non-iterable instance")}}(),s=function(){function e(e,t){for(var n=0;n<t.length;n++){var r=t[n];r.enumerable=r.enumerable||!1,r.configurable=!0,"value"in r&&(r.writable=!0),Object.defineProperty(e,r.key,r)}}return function(t,n,r){return n&&e(t.prototype,n),r&&e(t,r),t}}(),c=n(0),l=(r(c),n(1)),f=r(l),p=n(3),h=r(p),d=n(2),_={1:[8],2:[6,12],3:[1,8,15],4:[1,5,10,15],5:[1,4,8,12,16],6:[1,3,7,10,13,16],7:[1,3,6,9,11,13,16],8:[1,3,5,7,9,11,13,15],9:[1,3,5,7,9,11,13,15,16],10:[1,2,3,5,7,9,11,13,15,16],11:[1,2,3,5,7,9,11,13,14,15,16],12:[1,2,3,4,5,7,9,11,13,14,15,16],13:[1,2,3,4,5,7,9,11,12,13,14,15,16],14:[1,2,3,4,5,6,7,9,11,12,13,14,15,16],15:[1,2,3,4,5,6,7,9,10,11,12,13,14,15,16],16:[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]},y=[21,24,27,30,33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105,108];t.Notes=function(e){function t(){var e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:[21,108],n=arguments.length>1&&void 0!==arguments[1]?arguments[1]:1;o(this,t);var r=i(this,(t.__proto__||Object.getPrototypeOf(t)).call(this)),u=y.findIndex(function(t){return t>=e[0]}),a=y.findIndex(function(t){return t>=e[1]});a=-1===a?a=y.length:a+1;var s=y.slice(u,a);return r._samplers=_[n].slice(),r._activeNotes=new Map,r._samplers.forEach(function(e,t){r._samplers[t]={},s.forEach(function(n){r._samplers[t][n]=f.default.getNotesUrl(n,e)})}),r}return u(t,e),s(t,[{key:"_hasNote",value:function(e,t){return this._samplers.hasOwnProperty(t)&&this._samplers[t].has(e)}},{key:"_getNote",value:function(e,t){return this._samplers[t].get(e)}},{key:"stop",value:function(e,t,n){this._activeNotes.has(e)&&(this._activeNotes.get(e).forEach(function(e){e.stop(t+1,1)}),this._activeNotes.delete(e))}},{key:"start",value:function(e,t,n){var r=n*(this._samplers.length-1),o=Math.round(r),i=o-r,u=1-.5*i;1===this._samplers.length&&(u=Math.max(n,.05));var s=(0,d.midiToFrequencyRatio)(e),c=a(s,2),l=c[0],f=c[1];if(this._hasNote(l,o)){var p=(0,d.createSource)(this._getNote(l,o));p.playbackRate.value=f,p.connect(this.output),p.curve="exponential",p.start(t,0,void 0,u,0),this._activeNotes.has(e)||this._activeNotes.set(e,[]),this._activeNotes.get(e).push(p)}}},{key:"load",value:function(e){var t=this,n=[];return this._samplers.forEach(function(r,o){var i=new Promise(function(n){t._samplers[o]=new c.Buffers(r,n,e)});n.push(i)}),Promise.all(n)}}]),t}(h.default)},function(e,t,n){"use strict";function r(e){return e&&e.__esModule?e:{default:e}}function o(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}function i(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t}function u(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)}Object.defineProperty(t,"__esModule",{value:!0});var a=function(){function e(e,t){for(var n=0;n<t.length;n++){var r=t[n];r.enumerable=r.enumerable||!1,r.configurable=!0,"value"in r&&(r.writable=!0),Object.defineProperty(e,r.key,r)}}return function(t,n,r){return n&&e(t.prototype,n),r&&e(t,r),t}}(),s=n(3),c=r(s),l=n(1),f=(r(l),n(2)),p=n(0),h=(r(p),function(e){function t(){o(this,t);var e=i(this,(t.__proto__||Object.getPrototypeOf(t)).call(this));return e._downTime=1/0,e._currentSound=null,e._buffers=null,e}return u(t,e),a(t,[{key:"load",value:function(e){var t=this;return new Promise(function(n){t._buffers=new p.Buffers({up:"pedalU1.mp3",down:"pedalD1.mp3"},n,e)})}},{key:"_squash",value:function(e){this._currentSound&&this._currentSound.stop(e+.1,.1),this._currentSound=null}},{key:"_playSample",value:function(e,t){this._currentSound=(0,f.createSource)(this._buffers.get(t)),this._currentSound.curve="exponential",this._currentSound.connect(this.output).start(e,(0,f.randomBetween)(0,.01),void 0,.5*(0,f.randomBetween)(.5,1),.05)}},{key:"down",value:function(e){this._squash(e),this._downTime=e,this._playSample(e,"down")}},{key:"up",value:function(e){this._squash(e),this._downTime=1/0,this._playSample(e,"up")}},{key:"isDown",value:function(e){return e>this._downTime}}]),t}(c.default));t.default=h},function(e,t,n){"use strict";function r(e){return e&&e.__esModule?e:{default:e}}function o(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}function i(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t}function u(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)}Object.defineProperty(t,"__esModule",{value:!0});var a=function(){function e(e,t){for(var n=0;n<t.length;n++){var r=t[n];r.enumerable=r.enumerable||!1,r.configurable=!0,"value"in r&&(r.writable=!0),Object.defineProperty(e,r.key,r)}}return function(t,n,r){return n&&e(t.prototype,n),r&&e(t,r),t}}(),s=n(1),c=r(s),l=n(3),f=r(l),p=n(2),h=n(0),d=function(e){function t(e){o(this,t);var n=i(this,(t.__proto__||Object.getPrototypeOf(t)).call(this));n._buffers={};for(var r=e[0];r<=e[1];r++)n._buffers[r]=c.default.getReleasesUrl(r);return n}return u(t,e),a(t,[{key:"load",value:function(e){var t=this;return new Promise(function(n){t._buffers=new h.Buffers(t._buffers,n,e)})}},{key:"start",value:function(e,t,n){if(this._buffers.has(e)){var r=(0,p.createSource)(this._buffers.get(e)).connect(this.output);n*=(0,p.randomBetween)(.5,1),r.start(t,0,void 0,.015*n,0)}}}]),t}(f.default);t.default=d},function(e,t,n){"use strict";function r(e){return e&&e.__esModule?e:{default:e}}function o(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")}function i(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t}function u(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)}Object.defineProperty(t,"__esModule",{value:!0}),t.Piano=void 0;var a=function(){function e(e,t){for(var n=0;n<t.length;n++){var r=t[n];r.enumerable=r.enumerable||!1,r.configurable=!0,"value"in r&&(r.writable=!0),Object.defineProperty(e,r.key,r)}}return function(t,n,r){return n&&e(t.prototype,n),r&&e(t,r),t}}(),s=n(0),c=r(s),l=n(6),f=r(l),p=n(5),h=n(4),d=r(h),_=n(7),y=r(_),v=n(1);r(v),t.Piano=function(e){function t(){o(this,t);var e=c.default.defaults(arguments,["range","velocities"],{velocities:1,range:[21,108],release:!0}),n=i(this,(t.__proto__||Object.getPrototypeOf(t)).call(this));return n.createInsOuts(0,1),n._loaded=!1,n._heldNotes=new Map,n._sustainedNotes=new Map,n._notes=new p.Notes(e.range,e.velocities).connect(n.output),n._pedal=(new f.default).connect(n.output),e.release&&(n._harmonics=new d.default(e.range).connect(n.output),n._release=new y.default(e.range).connect(n.output)),n}return u(t,e),a(t,[{key:"load",value:function(){var e=this,t=arguments.length>0&&void 0!==arguments[0]?arguments[0]:"https://tambien.github.io/Piano/Salamander/",n=[this._notes.load(t),this._pedal.load(t)];return this._harmonics&&n.push(this._harmonics.load(t)),this._release&&n.push(this._release.load(t)),Promise.all(n).then(function(){e._loaded=!0})}},{key:"pedalDown",value:function(e){return this.loaded&&(e=this.toSeconds(e),this._pedal.isDown(e)||this._pedal.down(e)),this}},{key:"pedalUp",value:function(e){var t=this;return this.loaded&&(e=this.toSeconds(e),this._pedal.isDown(e)&&(this._pedal.up(e),this._sustainedNotes.forEach(function(n,r){t._heldNotes.has(r)||t._notes.stop(r,e)}),this._sustainedNotes.clear())),this}},{key:"keyDown",value:function(e){var t=arguments.length>1&&void 0!==arguments[1]?arguments[1]:c.default.now(),n=arguments.length>2&&void 0!==arguments[2]?arguments[2]:.8;return this.loaded&&(t=this.toSeconds(t),c.default.isString(e)&&(e=Math.round((0,s.Frequency)(e).toMidi())),this._heldNotes.has(e)||(this._heldNotes.set(e,{time:t,velocity:n}),this._notes.start(e,t,n))),this}},{key:"keyUp",value:function(e){var t=arguments.length>1&&void 0!==arguments[1]?arguments[1]:c.default.now(),n=arguments.length>2&&void 0!==arguments[2]?arguments[2]:.8;if(this.loaded&&(t=this.toSeconds(t),c.default.isString(e)&&(e=Math.round((0,s.Frequency)(e).toMidi())),this._heldNotes.has(e))){var r=this._heldNotes.get(e);this._heldNotes.delete(e),this._release&&this._release.start(e,t,n);var o=t-r.time,i=r.velocity,u=.5/Math.max(o,.1)+i+n;u=Math.pow(Math.log(Math.max(u,1)),2)/2,this._pedal.isDown(t)?this._sustainedNotes.has(e)||this._sustainedNotes.set(e,t):(this._notes.stop(e,t,n),this._harmonics&&this._harmonics.start(e,t,u))}return this}},{key:"setVolume",value:function(e,t){switch(e){case"note":this._notes.volume=t;break;case"pedal":this._pedal.volume=t;break;case"release":this._release&&(this._release.volume=t);break;case"harmonics":this._harmonics&&(this._harmonics.volume=t)}return this}},{key:"stopAll",value:function(){var e=this;return this.pedalUp(),this._heldNotes.forEach(function(t,n){e.keyUp(n)}),this}},{key:"progress",value:function(e){return s.Buffer.on("progress",e),this}},{key:"loaded",get:function(){return this._loaded}}]),t}(s.AudioNode)}])});
 
-},{"tone":152}],152:[function(require,module,exports){
+},{"tone":175}],175:[function(require,module,exports){
 (function(root, factory){
 
 	//UMD
@@ -44586,7 +46748,7 @@ exports.clearImmediate = typeof clearImmediate === "function" ? clearImmediate :
 	
 	return Tone;
 }));
-},{}],153:[function(require,module,exports){
+},{}],176:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -44652,7 +46814,7 @@ var ButtonCanvas = /** @class */ (function () {
 }());
 exports.ButtonCanvas = ButtonCanvas;
 
-},{}],154:[function(require,module,exports){
+},{}],177:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -44687,43 +46849,43 @@ var categoricalDeltaTimeUserParameters = {
 };
 exports.ALL_CONFIGS = {
     epiano_auto_no_enc: {
-        name: 'Language Model',
+        name: 'Autoregressive',
         uri: BASE_PATH + 'model/epiano/auto_no_enc_483027',
         modelCfg: new PianoGenieModel.AutoNoEncCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_auto_no_enc_dt: {
-        name: 'Language Model w/ Timing',
+        name: 'Autoregressive + Delta Time',
         uri: BASE_PATH + 'model/epiano/auto_no_enc_dt_516217',
         modelCfg: new PianoGenieModel.AutoNoEncDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_vq_auto: {
-        name: 'VQ-VAE',
+        name: 'Step VQ-VAE + Autoregression',
         uri: BASE_PATH + 'model/epiano/stp_vq4_auto_380486',
         modelCfg: new PianoGenieModel.StpVqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_vq_auto_dt: {
-        name: 'VQ-VAE w/ Timing',
+        name: 'Step VQ-VAE + Autoregression + Delta Time',
         uri: BASE_PATH + 'model/epiano/stp_vq4_auto_dt_337481',
         modelCfg: new PianoGenieModel.StpVqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
     },
     epiano_stp_iq_auto: {
-        name: 'IQAE',
+        name: 'Step IQ + Autoregression',
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_394598',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour: {
-        name: 'IQAE w/ Contour Alignment',
+        name: 'Step IQ + Autoregression + Contour',
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_175255',
         modelCfg: new PianoGenieModel.StpIqAutoCfg(true),
         defaultUserParameters: categoricalUserParameters
     },
     epiano_stp_iq_auto_contour_dt: {
-        name: '(Best) IQAE w/ Contour Alignment and Timing',
+        name: 'Step IQ + Autoregression + Contour + Delta Time',
         uri: BASE_PATH + 'model/epiano/stp_iq_auto_contour_dt_166006',
         modelCfg: new PianoGenieModel.StpIqAutoDtCfg(true),
         defaultUserParameters: categoricalDeltaTimeUserParameters
@@ -44731,7 +46893,7 @@ exports.ALL_CONFIGS = {
 };
 exports.DEFAULT_CFG_NAME = 'epiano_stp_iq_auto_contour_dt';
 
-},{"./model":156}],155:[function(require,module,exports){
+},{"./model":179}],178:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -44807,7 +46969,7 @@ var LSTMStateUtil = /** @class */ (function () {
 }());
 exports.LSTMStateUtil = LSTMStateUtil;
 
-},{"@tensorflow/tfjs-core":8}],156:[function(require,module,exports){
+},{"@tensorflow/tfjs-core":9}],179:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -45110,6 +47272,11 @@ var Model = /** @class */ (function () {
                             _loop_1(i);
                         }
                         this.initialized = true;
+                        // Run the network once to avoid long malloc on first button press.
+                        tf.tidy(function () {
+                            var coldStartLastState = _this.createZeroState(1);
+                            _this.evaluate(coldStartLastState, [0], [-1], [0.]);
+                        });
                         return [2 /*return*/];
                 }
             });
@@ -45177,7 +47344,7 @@ var Model = /** @class */ (function () {
 }());
 exports.Model = Model;
 
-},{"./lstm_state":155,"@tensorflow/tfjs-core":8}],157:[function(require,module,exports){
+},{"./lstm_state":178,"@tensorflow/tfjs-core":9}],180:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -45271,7 +47438,7 @@ var PianoCanvas = /** @class */ (function () {
 }());
 exports.PianoCanvas = PianoCanvas;
 
-},{}],158:[function(require,module,exports){
+},{}],181:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -45307,6 +47474,8 @@ var PianoGenie = /** @class */ (function () {
         this.ui = ui;
         this.buttonToNoteMap = new Map();
         this.ui.genieCanvas.resize(this.cfg.modelCfg.getNumButtons());
+        this.sustainPedalDown = false;
+        this.sustainedNotes = new Set();
         if (this.cfg.defaultUserParameters.lookAhead) {
             this.initLookAhead();
             this.lookAhead();
@@ -45327,6 +47496,12 @@ var PianoGenie = /** @class */ (function () {
                     _this.pressButton(button);
                 }
             }
+            if (key === 32) {
+                _this.sustainPedalDown = true;
+            }
+            if (key === 83) {
+                _this.softPedalDown = true;
+            }
         };
         document.onkeyup = function (evt) {
             var key = evt.keyCode;
@@ -45336,6 +47511,19 @@ var PianoGenie = /** @class */ (function () {
                 if (_this.buttonToNoteMap.has(button)) {
                     _this.releaseButton(button);
                 }
+            }
+            if (key === 32) {
+                _this.sustainPedalDown = false;
+                var heldButtonNotes_1 = new Set(_this.buttonToNoteMap.values());
+                _this.sustainedNotes.forEach(function (note) {
+                    if (!heldButtonNotes_1.has(note)) {
+                        _this.sampler.keyUp(note);
+                    }
+                });
+                _this.sustainedNotes.clear();
+            }
+            if (key === 83) {
+                _this.softPedalDown = false;
             }
         };
         // Bind reset button
@@ -45381,7 +47569,13 @@ var PianoGenie = /** @class */ (function () {
             this.lookAheadPreds = [];
             // Play immediately
             var note = output + 21;
-            this.sampler.keyDown(note);
+            if (this.sustainPedalDown) {
+                if (this.sustainedNotes.has(note)) {
+                    this.sampler.keyUp(note);
+                }
+                this.sustainedNotes.add(note);
+            }
+            this.sampler.keyDown(note, undefined, this.softPedalDown ? 0.2 : 0.8);
             // Draw immediately
             this.buttonToNoteMap.set(button, note);
             this.ui.genieCanvas.redraw(this.buttonToNoteMap);
@@ -45417,7 +47611,13 @@ var PianoGenie = /** @class */ (function () {
             // Play
             var output = predsArr[0];
             var note = output + 21;
-            this.sampler.keyDown(note);
+            if (this.sustainPedalDown) {
+                if (this.sustainedNotes.has(note)) {
+                    this.sampler.keyUp(note);
+                }
+                this.sustainedNotes.add(note);
+            }
+            this.sampler.keyDown(note, undefined, this.softPedalDown ? 0.2 : 0.8);
             // Draw
             this.buttonToNoteMap.set(button, note);
             this.ui.genieCanvas.redraw(this.buttonToNoteMap);
@@ -45434,7 +47634,9 @@ var PianoGenie = /** @class */ (function () {
     };
     PianoGenie.prototype.releaseButton = function (button) {
         var note = this.buttonToNoteMap.get(button);
-        this.sampler.keyUp(note);
+        if (!this.sustainPedalDown) {
+            this.sampler.keyUp(note);
+        }
         this.buttonToNoteMap["delete"](button);
         this.ui.genieCanvas.redraw(this.buttonToNoteMap);
         this.redrawPiano();
@@ -45544,7 +47746,7 @@ Promise.all([
     ui.setReady();
 });
 
-},{"./configs":154,"./lstm_state":155,"./model":156,"./sample":159,"./ui":160,"@tensorflow/tfjs-core":8,"tone":152,"tone-piano":151}],159:[function(require,module,exports){
+},{"./configs":177,"./lstm_state":178,"./model":179,"./sample":182,"./ui":183,"@tensorflow/tfjs-core":9,"tone":175,"tone-piano":174}],182:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -45770,7 +47972,7 @@ function sampleNeuralCache(logits, cache, states, temperature, lambda, theta) {
 }
 exports.sampleNeuralCache = sampleNeuralCache;
 
-},{"@tensorflow/tfjs-core":8}],160:[function(require,module,exports){
+},{"@tensorflow/tfjs-core":9}],183:[function(require,module,exports){
 "use strict";
 /* Copyright 2018 Google Inc. All Rights Reserved.
 
@@ -45948,4 +48150,4 @@ var PianoGenieUI = /** @class */ (function () {
 }());
 exports.PianoGenieUI = PianoGenieUI;
 
-},{"./button_canvas":153,"./configs":154,"./piano_canvas":157}]},{},[158]);
+},{"./button_canvas":176,"./configs":177,"./piano_canvas":180}]},{},[181]);
