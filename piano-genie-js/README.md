@@ -1,15 +1,7 @@
 # Piano Genie Demo
 
-This model is the user interface and inference component of [Piano Genie](https://github.com/tensorflow/magenta/tree/master/magenta/models/piano_genie). Piano Genie allows you to control an 88-key piano via an intelligent 8-button interface.
+This directory formerly hosted our interactive demo for [Piano Genie](https://magenta.tensorflow.org/pianogenie).
 
-## Demo
+We now have a better demo available at [goo.gl/magenta/piano-genie](goo.gl/magenta/piano-genie). It was built with the Piano Genie model in [Magenta JS](https://github.com/tensorflow/magenta-js/tree/master/music) and its source code is available on [Glitch](https://glitch.com/edit/#!/piano-genie).
 
-To view a hosted version of the demo, go to https://tensorflow.github.io/magenta-demos/piano-genie
-
-## Building
-
-To build, execute `yarn build` in the project directory. Then, type `yarn serve` to start a local server for the web demo.
-
-## Testing
-
-To test the models, first [download the test models bundled as JSON files](https://storage.googleapis.com/magentadata/js/checkpoints/piano_genie/testdata.zip). Extract the models into `piano-genie-js/testdata` and type `yarn test`.
+If you are interested in our old demo which featured *all* of the models from our [paper](https://arxiv.org/abs/1810.05246), you can still find it [here](https://chrisdonahue.github.io/piano-genie-research-demo/) ([code](https://github.com/chrisdonahue/piano-genie-research-demo/)).
