@@ -18,7 +18,7 @@
     "@types/jasmine": "^2.8.6",
     "@types/node": "^9.6.5",
     "browserify": "^16.2.0",
-    "http-server": "^0.11.1",
+    "http-server": "^0.12.1",
     "tsify": "^4.0.0",
     "typescript": "^2.8.1"
   }
