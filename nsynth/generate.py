@@ -72,13 +72,14 @@ def interpolate_embeddings():
   resolution = settings['resolution']
   final_length = settings['final_length']
   instrument_grid = settings['instruments']
-  grid_size = len(instrument_grid[0]) - 1 - 1e-13
+  grid_size = len(instrument_grid[0]) - 1
 
   #  set up sub grid
   res = (resolution - 1) * grid_size + 1
-  x, y = np.meshgrid(np.linspace(0, int(grid_size), int(res+1)), np.linspace(0, int(grid_size), int(res+1)))
-  x = x.reshape(-1)
-  y = y.reshape(-1)
+  eps = 1e-10 # required to ensure correct organization of samples in multigrids
+  x, y = np.meshgrid(np.linspace(eps, grid_size, res + 1), np.linspace(eps, grid_size, res + 1))
+  x = x.reshape(-1) - eps
+  y = y.reshape(-1) - eps
   xy_grid = zip(x, y)
 
   #  cache all embeddings
@@ -291,9 +292,9 @@ if __name__ == "__main__":
     "--save_path=%s/working_dir/audio/batch%s" % (source_dir, gpu),
     "--sample_length=%s" % settings["final_length"],
     "--batch_size=%i" % settings["batch_size_generate"],
-    "--log=WARN",
+    "--log=INFO",
     "--gpu_number=%s" % gpu])) for gpu in range(settings['gpus'])]
-  input("\nRun the above command(s) in another terminal.\nPress CTRL+C to kill them once they have generated the number of samples you want (sample_length=...)\nFinally, press enter here to continue...")
+  input("\nRun the above command(s) in another terminal.\nPress CTRL+C to kill them once they have generated the number of samples you want (sample_length=...)\nFinally, press Enter here to continue...")
   
   #  move files out of batch folders
   if not os.path.exists('working_dir/audio/raw_wav'):
