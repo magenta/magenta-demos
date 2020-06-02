@@ -17,7 +17,6 @@
 # Changes were made to ensure output audio files conform with the NSynth
 # MaxForLive device's epectations and so that the entire pipeline could be
 # run at once.
-
 import json, os, sys, re, subprocess, fnmatch, time
 from os.path import basename, isfile
 from math import floor, ceil
@@ -39,8 +38,7 @@ source_dir = os.getcwd()
 def compute_embeddings():
   #   convert all aif files to wav
   if ['aif' in f for f in os.listdir('audio_input')]:
-    if not os.path.exists('aif_bkp'):
-      os.mkdir('aif_bkp')
+    os.makedirs('aif_bkp', exist_ok=True)
     for fname in os.listdir('audio_input'):
       if 'aif' in fname:
         nfn = 'audio_input/'+fname.replace('aif', 'wav')
@@ -73,13 +71,14 @@ def interpolate_embeddings():
   resolution = settings['resolution']
   final_length = settings['final_length']
   instrument_grid = settings['instruments']
-  grid_size = len(instrument_grid[0]) - 1 - 1e-13
+  grid_size = len(instrument_grid[0]) - 1
 
   #  set up sub grid
   res = (resolution - 1) * grid_size + 1
-  x, y = np.meshgrid(np.linspace(0, grid_size, res+1), np.linspace(0, grid_size, res+1))
-  x = x.reshape(-1)
-  y = y.reshape(-1)
+  eps = 1e-10 # required to ensure correct organization of samples in multigrids
+  x, y = np.meshgrid(np.linspace(eps, grid_size, res + 1), np.linspace(eps, grid_size, res + 1))
+  x = x.reshape(-1) - eps
+  y = y.reshape(-1) - eps
   xy_grid = zip(x, y)
 
   #  cache all embeddings
@@ -114,8 +113,7 @@ def interpolate_embeddings():
 
   done = set()
 
-  if not os.path.exists('working_dir/embeddings/interp'):
-    os.mkdir('working_dir/embeddings/interp')
+  os.makedirs('working_dir/embeddings/interp', exist_ok=True)
 
   for idx, xy in enumerate(xy_grid):
     sub_grid, weights = get_instruments(xy), get_weights(xy)
@@ -131,17 +129,14 @@ def batch_embeddings():
   num_embeddings = len(os.listdir('working_dir/embeddings/interp/'))
   batch_size = num_embeddings / settings['gpus']
 
-  if not os.path.exists('working_dir/audio'):
-    os.mkdir('working_dir/audio')
+  os.makedirs('working_dir/audio', exist_ok=True)
 
   #  split the embeddings per gpu in folders
   for i in range(0, settings['gpus']):
     foldername = 'working_dir/embeddings/interp/batch%i' % i
-    if not os.path.exists(foldername):
-      os.mkdir(foldername)
+    os.makedirs(foldername, exist_ok=True)
     output_foldername = 'working_dir/audio/batch%i' % i
-    if not os.path.exists(output_foldername):
-      os.mkdir(output_foldername)
+    os.makedirs(output_foldername, exist_ok=True)
 
   #  shuffle to the folders
   batch = 0
@@ -163,7 +158,7 @@ def gen_call(gpu):
     "--save_path=%s/working_dir/audio/batch%s" % (source_dir, gpu),
     "--sample_length=%s" % settings["final_length"],
     "--batch_size=%i" % settings["batch_size_generate"],
-    "--log=WARN",
+    "--log=INFO",
     "--gpu_number=%s" % gpu])
 
 
@@ -188,8 +183,7 @@ def generate_audio():
   assert sum(results.get()) == 0
 
   #  move files out of batch folders
-  if not os.path.exists('working_dir/audio/raw_wav'):
-    os.mkdir('working_dir/audio/raw_wav')
+  os.makedirs('working_dir/audio/raw_wav', exist_ok=True)
   subprocess.call("find working_dir/audio -name \"*.wav\" | \
                    while read f; do mv $f working_dir/audio/raw_wav/${f##*/}; done", shell=True)
 
@@ -197,9 +191,8 @@ def generate_audio():
 def clean_files():
   original_path = os.path.join(source_dir, 'working_dir/audio/raw_wav/')
   cleaned_path = os.path.join(source_dir, 'output_grids', settings['name'])
-
-  if not os.path.exists(cleaned_path):
-    os.mkdir(cleaned_path)
+  os.makedirs(os.path.join(source_dir, 'output_grids'), exist_ok=True)
+  os.makedirs(cleaned_path, exist_ok=True)
 
   files = os.listdir(original_path)
   files = [f for f in files if '.wav' in f]
@@ -220,9 +213,8 @@ def clean_files():
     new_fpath = fpath.replace('gen_','')
 
     temp_file = os.path.join(cleaned_path, 'cleaned_' + new_fpath)
-    with open(temp_file, 'w') as f:
-      data_16bit = audio * 2**15
-      scipy.io.wavfile.write(f, 16000, data_16bit.astype(np.int16))
+    data_16bit = audio * 2**15
+    scipy.io.wavfile.write(temp_file, 16000, data_16bit.astype(np.int16))
 
     #  normalize audio level
     cleaned_file = os.path.join(cleaned_path, new_fpath)
@@ -281,8 +273,22 @@ if __name__ == "__main__":
   print("\nBatchings embeddings for GPU(s)...")
   batch_embeddings()
 
-  print("Generating audio from embeddings (this may take a while!)\n")
-  generate_audio()
+  print("Generate audio from embeddings (this may take a while!)\n")
+  # generate_audio()
+  [print(" ".join(["nsynth_generate",
+    "--checkpoint_path=%s/model.ckpt-200000" % settings['checkpoint_dir'],
+    "--source_path=%s/working_dir/embeddings/interp/batch%s" % (source_dir, gpu),
+    "--save_path=%s/working_dir/audio/batch%s" % (source_dir, gpu),
+    "--sample_length=%s" % settings["final_length"],
+    "--batch_size=%i" % settings["batch_size_generate"],
+    "--log=INFO",
+    "--gpu_number=%s" % gpu])) for gpu in range(settings['gpus'])]
+  input("\nRun the above command(s) in another terminal.\nPress CTRL+C to kill them once they have generated the number of samples you want (sample_length=...)\nFinally, press Enter here to continue...")
+
+  #  move files out of batch folders
+  os.makedirs('working_dir/audio/raw_wav', exist_ok=True)
+  subprocess.call("find working_dir/audio -name \"*.wav\" | \
+                   while read f; do mv $f working_dir/audio/raw_wav/${f##*/}; done", shell=True)
 
   print("\nCleaning up generated audio files...\n")
   clean_files()
