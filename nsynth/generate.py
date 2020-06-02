@@ -38,8 +38,7 @@ source_dir = os.getcwd()
 def compute_embeddings():
   #   convert all aif files to wav
   if ['aif' in f for f in os.listdir('audio_input')]:
-    if not os.path.exists('aif_bkp'):
-      os.mkdir('aif_bkp')
+    os.makedirs('aif_bkp', exist_ok=True)
     for fname in os.listdir('audio_input'):
       if 'aif' in fname:
         nfn = 'audio_input/'+fname.replace('aif', 'wav')
@@ -114,8 +113,7 @@ def interpolate_embeddings():
 
   done = set()
 
-  if not os.path.exists('working_dir/embeddings/interp'):
-    os.mkdir('working_dir/embeddings/interp')
+  os.makedirs('working_dir/embeddings/interp', exist_ok=True)
 
   for idx, xy in enumerate(xy_grid):
     sub_grid, weights = get_instruments(xy), get_weights(xy)
@@ -131,17 +129,14 @@ def batch_embeddings():
   num_embeddings = len(os.listdir('working_dir/embeddings/interp/'))
   batch_size = num_embeddings / settings['gpus']
 
-  if not os.path.exists('working_dir/audio'):
-    os.mkdir('working_dir/audio')
+  os.makedirs('working_dir/audio', exist_ok=True)
 
   #  split the embeddings per gpu in folders
   for i in range(0, settings['gpus']):
     foldername = 'working_dir/embeddings/interp/batch%i' % i
-    if not os.path.exists(foldername):
-      os.mkdir(foldername)
+    os.makedirs(foldername, exist_ok=True)
     output_foldername = 'working_dir/audio/batch%i' % i
-    if not os.path.exists(output_foldername):
-      os.mkdir(output_foldername)
+    os.makedirs(output_foldername, exist_ok=True)
 
   #  shuffle to the folders
   batch = 0
@@ -188,8 +183,7 @@ def generate_audio():
   assert sum(results.get()) == 0
 
   #  move files out of batch folders
-  if not os.path.exists('working_dir/audio/raw_wav'):
-    os.mkdir('working_dir/audio/raw_wav')
+  os.makedirs('working_dir/audio/raw_wav', exist_ok=True)
   subprocess.call("find working_dir/audio -name \"*.wav\" | \
                    while read f; do mv $f working_dir/audio/raw_wav/${f##*/}; done", shell=True)
 
@@ -197,13 +191,8 @@ def generate_audio():
 def clean_files():
   original_path = os.path.join(source_dir, 'working_dir/audio/raw_wav/')
   cleaned_path = os.path.join(source_dir, 'output_grids', settings['name'])
-  if not os.path.exists(cleaned_path):
-    if not os.path.exists(os.path.join(source_dir, 'output_grids')):
-      os.mkdir(os.path.join(source_dir, 'output_grids'))
-    os.mkdir(cleaned_path)
-
-  if not os.path.exists(cleaned_path):
-    os.mkdir(cleaned_path)
+  os.makedirs(os.path.join(source_dir, 'output_grids'), exist_ok=True)
+  os.makedirs(cleaned_path, exist_ok=True)
 
   files = os.listdir(original_path)
   files = [f for f in files if '.wav' in f]
@@ -295,10 +284,9 @@ if __name__ == "__main__":
     "--log=INFO",
     "--gpu_number=%s" % gpu])) for gpu in range(settings['gpus'])]
   input("\nRun the above command(s) in another terminal.\nPress CTRL+C to kill them once they have generated the number of samples you want (sample_length=...)\nFinally, press Enter here to continue...")
-  
+
   #  move files out of batch folders
-  if not os.path.exists('working_dir/audio/raw_wav'):
-    os.mkdir('working_dir/audio/raw_wav')
+  os.makedirs('working_dir/audio/raw_wav', exist_ok=True)
   subprocess.call("find working_dir/audio -name \"*.wav\" | \
                    while read f; do mv $f working_dir/audio/raw_wav/${f##*/}; done", shell=True)
 
