@@ -1,6 +1,6 @@
 # Status
 
-This repository is currently inactive (archived, read only). We have transitioned to using individual repositories for new projects. For our current work, see the [Magenta website](g.co/magenta) and [Magenta GitHub Organization](https://github.com/magenta).
+This repository is currently inactive (archived, read only). We have transitioned to using individual repositories for new projects. For our current work, see the [Magenta website](https://g.co/magenta) and [Magenta GitHub Organization](https://github.com/magenta).
 
 
 
