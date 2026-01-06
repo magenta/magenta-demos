@@ -1,3 +1,9 @@
+# Status
+
+This repository is currently inactive (archived, read only). We have transitioned to using individual repositories for new projects. For our current work, see the [Magenta website](g.co/magenta) and [Magenta GitHub Organization](https://github.com/magenta).
+
+
+
 # Magenta Demos
 
 This repository contains various demonstrations of [Magenta](https://magenta.tensorflow.org) models.
